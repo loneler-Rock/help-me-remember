@@ -1,7 +1,7 @@
 name: Map Parser
 on:
   repository_dispatch:
-    types: [map_task] # 務必確認與 Make.com 的 Event Type 一致
+    types: [map_task]
 
 jobs:
   build:
@@ -14,6 +14,8 @@ jobs:
           python-version: '3.9'
       - name: Install dependencies
         run: pip install requests supabase
+      
+      # ★★★ 最重要就是下面這一段！一定要有！ ★★★
       - name: Run parser
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
