@@ -1,80 +1,81 @@
 <!DOCTYPE html>
-<html lang="zh-TW">
+<html>
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>我的私藏地圖</title>
+    <title>私藏地圖偵錯版</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <style>
-        body { margin: 0; padding: 0; font-family: "Microsoft JhengHei", sans-serif; }
-        #map { height: 100vh; width: 100%; } /* 地圖佔滿整個螢幕 */
-        .loading { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 1000; background: white; padding: 10px 20px; border-radius: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.2); display: none; }
+        #map { height: 100vh; width: 100%; }
+        #debug-log { 
+            position: absolute; top: 50px; left: 10px; z-index: 9999; 
+            background: rgba(0,0,0,0.8); color: #0f0; padding: 10px; 
+            font-family: monospace; font-size: 12px; max-width: 90%;
+            display: block; pointer-events: none;
+        }
     </style>
 </head>
 <body>
-
-    <div id="loading" class="loading">正在讀取地圖...</div>
+    <div id="debug-log">🚀 系統啟動中...</div>
     <div id="map"></div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
 
     <script>
-        // ★★★ 請把下面這兩行換成你自己的 Supabase 設定 ★★★
-        const SUPABASE_URL = 'https://eovkimfqgoggxbkvkjxg.supabase.co'; 
-        const SUPABASE_KEY = '=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVvdmtpbWZxZ29nZ3hia3ZranhnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njc3NjI1NzksImV4cCI6MjA4MzMzODU3OX0.akX_HaZQwRh53KJ-ULuc5Syf2ypjhaYOg7DfWhYs8EY'; 
+        const log = (msg) => {
+            document.getElementById('debug-log').innerHTML += '<br> > ' + msg;
+            console.log(msg);
+        };
 
-        // 初始化
-        const map = L.map('map').setView([23.6978, 120.9605], 7); // 預設看全台灣
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            attribution: '© OpenStreetMap contributors'
-        }).addTo(map);
+        // ★★★ 請檢查這兩行是否與你的後台一致 ★★★
+        const SUPABASE_URL = 'https://eovkimfqgoggxbkvkjxg.supabase.co';
+        const SUPABASE_KEY = '你的ANON_KEY貼在這邊'; 
 
-        const supabase = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-        const params = new URLSearchParams(window.location.search);
-        const userId = params.get('uid');
-        const loadingDiv = document.getElementById('loading');
+        async function start() {
+            try {
+                const params = new URLSearchParams(window.location.search);
+                const uid = params.get('uid');
+                log('UID 偵測: ' + uid);
 
-        async function initMap() {
-            if (!userId) {
-                alert("⚠️ 請由 LINE 輸入「地圖」來開啟此頁面");
-                return;
-            }
+                if (!uid) {
+                    log('❌ 錯誤: 網址沒帶 uid');
+                    return;
+                }
 
-            loadingDiv.style.display = 'block';
-            console.log("正在搜尋 User:", userId);
+                log('正在連接 Supabase...');
+                const _supabase = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
-            // 讀取資料
-            const { data, error } = await supabase
-                .from('ig_food_map') // 你的資料表名稱
-                .select('*')
-                .eq('user_id', userId);
+                log('正在讀取資料表 ig_food_map...');
+                const { data, error } = await _supabase
+                    .from('ig_food_map')
+                    .select('*')
+                    .eq('user_id', uid);
 
-            loadingDiv.style.display = 'none';
+                if (error) {
+                    log('❌ 資料庫報錯: ' + error.message);
+                    return;
+                }
 
-            if (error) {
-                console.error(error);
-                alert("讀取錯誤，請檢查 Supabase 設定");
-                return;
-            }
+                log('成功讀取資料筆數: ' + data.length);
+                
+                const map = L.map('map').setView([23.6, 121], 7);
+                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
 
-            if (data.length === 0) {
-                alert("你的地圖是空的喔！快去 LINE 傳送地點吧！");
-            } else {
-                // 自動調整地圖視野，包含所有點
-                const bounds = [];
-                data.forEach(place => {
-                    if (place.latitude && place.longitude) {
-                        const marker = L.marker([place.latitude, place.longitude]).addTo(map);
-                        marker.bindPopup(`<b>${place.name || '未命名'}</b><br><a href="${place.original_url}" target="_blank">打開連結</a>`);
-                        bounds.push([place.latitude, place.longitude]);
-                    }
-                });
-                if(bounds.length > 0) map.fitBounds(bounds);
+                if (data.length > 0) {
+                    data.forEach(p => {
+                        L.marker([p.latitude, p.longitude]).addTo(map).bindPopup(p.name);
+                    });
+                    log('✅ 地圖標記完成！');
+                } else {
+                    log('ℹ️ 目前這 ID 沒資料，請去 LINE 傳連結。');
+                }
+
+            } catch (err) {
+                log('💥 程式全面崩潰: ' + err.message);
             }
         }
 
-        initMap();
+        start();
     </script>
 </body>
 </html>
