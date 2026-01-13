@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>我的私藏地圖</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        body { margin: 0; padding: 0; font-family: "Microsoft JhengHei", sans-serif; }
+        #map { height: 100vh; width: 100%; } /* 地圖佔滿整個螢幕 */
+        .loading { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 1000; background: white; padding: 10px 20px; border-radius: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.2); display: none; }
+    </style>
+</head>
+<body>
+
+    <div id="loading" class="loading">正在讀取地圖...</div>
+    <div id="map"></div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+
+    <script>
+        // ★★★ 請把下面這兩行換成你自己的 Supabase 設定 ★★★
+        const SUPABASE_URL = 'https://你的專案ID.supabase.co'; 
+        const SUPABASE_KEY = '你的SUPABASE_ANON_KEY'; 
+
+        // 初始化
+        const map = L.map('map').setView([23.6978, 120.9605], 7); // 預設看全台灣
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
+
+        const supabase = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+        const params = new URLSearchParams(window.location.search);
+        const userId = params.get('uid');
+        const loadingDiv = document.getElementById('loading');
+
+        async function initMap() {
+            if (!userId) {
+                alert("⚠️ 請由 LINE 輸入「地圖」來開啟此頁面");
+                return;
+            }
+
+            loadingDiv.style.display = 'block';
+            console.log("正在搜尋 User:", userId);
+
+            // 讀取資料
+            const { data, error } = await supabase
+                .from('ig_food_map') // 你的資料表名稱
+                .select('*')
+                .eq('user_id', userId);
+
+            loadingDiv.style.display = 'none';
+
+            if (error) {
+                console.error(error);
+                alert("讀取錯誤，請檢查 Supabase 設定");
+                return;
+            }
+
+            if (data.length === 0) {
+                alert("你的地圖是空的喔！快去 LINE 傳送地點吧！");
+            } else {
+                // 自動調整地圖視野，包含所有點
+                const bounds = [];
+                data.forEach(place => {
+                    if (place.latitude && place.longitude) {
+                        const marker = L.marker([place.latitude, place.longitude]).addTo(map);
+                        marker.bindPopup(`<b>${place.name || '未命名'}</b><br><a href="${place.original_url}" target="_blank">打開連結</a>`);
+                        bounds.push([place.latitude, place.longitude]);
+                    }
+                });
+                if(bounds.length > 0) map.fitBounds(bounds);
+            }
+        }
+
+        initMap();
+    </script>
+</body>
+</html>
