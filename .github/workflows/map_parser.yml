@@ -1,4 +1,5 @@
 name: Map Parser
+
 on:
   repository_dispatch:
     types: [map_task]
@@ -8,16 +9,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
+      
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
+          
       - name: Install dependencies
         run: pip install requests supabase
-      
-      # ★★★ 最重要就是下面這一段！一定要有！ ★★★
+
       - name: Run parser
+        # ▼▼▼▼▼ 就是這裡！之前可能漏了這幾行，或者縮排不對 ▼▼▼▼▼
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        # ▲▲▲▲▲ 必須把保險箱的變數「注入」給 Python 環境 ▲▲▲▲▲
         run: python ig_map/main.py "${{ github.event.client_payload.url }}" "${{ github.event.client_payload.user_id }}"
