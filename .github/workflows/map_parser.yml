@@ -1,0 +1,21 @@
+name: Map Parser
+on:
+  repository_dispatch:
+    types: [map_task] # 務必確認與 Make.com 的 Event Type 一致
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      - name: Install dependencies
+        run: pip install requests supabase
+      - name: Run parser
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python ig_map/main.py "${{ github.event.client_payload.url }}" "${{ github.event.client_payload.user_id }}"
