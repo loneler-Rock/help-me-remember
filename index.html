@@ -25,11 +25,12 @@
 
     <script>
         // ==========================================
-        // 🔑 設定區 (請把你的資料填在這裡 !!!)
+        // 🔑 設定區
         // ==========================================
-        const SUPABASE_URL = "https://eovkimfqgoggxbkvkjxg.supabase.co";
-
-        const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVvdmtpbWZxZ29nZ3hia3ZranhnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njc3NjI1NzksImV4cCI6MjA4MzMzODU3OX0.akX_HaZQwRh53KJ-ULuc5Syf2ypjhaYOg7DfWhYs8EY";// ==========================================
+        // ★★★ 修正點：變數名稱統一改為 MY_ 開頭，跟下面呼叫時一致 ★★★
+        const MY_SUPABASE_URL = "https://eovkimfqgoggxbkvkjxg.supabase.co";
+        const MY_SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVvdmtpbWZxZ29nZ3hia3ZranhnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njc3NjI1NzksImV4cCI6MjA4MzMzODU3OX0.akX_HaZQwRh53KJ-ULuc5Syf2ypjhaYOg7DfWhYs8EY";
+        // ==========================================
 
         // 1. 初始化地圖
         const map = L.map('map').setView([23.5, 121], 7);
@@ -39,7 +40,7 @@
         }).addTo(map);
 
         // 2. 建立連線
-        // ★★★ 修正點：這裡變數改名為 'myClient'，避開 'supabase' 這個保留字 ★★★
+        // 這裡使用的是上面宣告的 MY_SUPABASE_URL，現在名字對起來了！
         const myClient = supabase.createClient(MY_SUPABASE_URL, MY_SUPABASE_ANON_KEY);
 
         // 3. 抓取資料
