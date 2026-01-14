@@ -19,9 +19,9 @@ jobs:
         run: pip install requests supabase
 
       - name: Run parser
-        # ▼▼▼▼▼ 就是這裡！之前可能漏了這幾行，或者縮排不對 ▼▼▼▼▼
+        # ▼▼▼▼▼ 就是缺了這一段！請確認這幾行有貼進去 ▼▼▼▼▼
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-        # ▲▲▲▲▲ 必須把保險箱的變數「注入」給 Python 環境 ▲▲▲▲▲
+        # ▲▲▲▲▲ 沒有這段，Python 就會說找不到 URL ▲▲▲▲▲
         run: python ig_map/main.py "${{ github.event.client_payload.url }}" "${{ github.event.client_payload.user_id }}"
