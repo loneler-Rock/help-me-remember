@@ -1,32 +1,58 @@
+
 import os
 import re
 import requests
+import sys
 from supabase import create_client
 
-# 1. 從環境變數讀取金鑰 (等等要去 GitHub 設定)
-url = os.environ.get("https://eovkimfqgoggxbkvkjxg.supabase.co")
-key = os.environ.get("=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVvdmtpbWZxZ29nZ3hia3ZranhnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njc3NjI1NzksImV4cCI6MjA4MzMzODU3OX0.akX_HaZQwRh53KJ-ULuc5Syf2ypjhaYOg7DfWhYs8EY") # 注意：存資料要用 Service Role Key
-supabase = create_client(url, key)
-
 def parse_map_url(target_url, user_id):
-    print(f"🚀 開始處理: {target_url}")
+    print("==============================")
+    print("🚀 系統啟動，開始檢查環境變數...")
+    
+    # 1. 讀取環境變數 (GitHub Secrets)
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+
+    # 2. 嚴格檢查：如果抓不到，直接印出「人話」錯誤
+    if not url:
+        print("❌ 錯誤：找不到 SUPABASE_URL！")
+        print("💡 請檢查 GitHub Settings -> Secrets，名字是不是打成 SUPABASE_URI 了？要改成 URL (L 結尾)！")
+        return False
+        
+    if not key:
+        print("❌ 錯誤：找不到 SUPABASE_SERVICE_ROLE_KEY！")
+        print("💡 請檢查 GitHub Secrets 名字有沒有空格？應該要用底線 _ 連接。")
+        return False
+
+    print(f"✅ 環境變數讀取成功！URL 長度: {len(url)}")
     
     try:
-        # 策略 A: 還原短網址並抓取 HTML
-        response = requests.get(target_url, timeout=10)
-        final_url = response.url
-        html_content = response.text
+        # 建立連線
+        supabase = create_client(url, key)
         
-        # 策略 B: 用 Regex 暴力搜尋座標 (V7.0 核心)
-        # 搜尋格式如: !3d25.0339!4d121.5644
+        print(f"🔍 開始解析網址: {target_url}")
+        
+        # 策略 A: 還原短網址
+        try:
+            response = requests.get(target_url, timeout=10)
+            final_url = response.url
+            html_content = response.text
+        except Exception as e:
+            print(f"⚠️ 網址連線失敗: {e}")
+            return False
+        
+        # 策略 B: 抓取座標
         coords = re.findall(r'!3d([0-9\.]+)!4d([0-9\.]+)', html_content)
         
         if coords:
             lat, lng = coords[0]
-            name = re.search(r'<title>(.*?)</title>', html_content)
-            place_name = name.group(1).replace(" - Google 地圖", "") if name else "未命名地點"
+            # 抓取店名
+            name_match = re.search(r'<title>(.*?)</title>', html_content)
+            place_name = name_match.group(1).replace(" - Google 地圖", "") if name_match else "未命名地點"
             
-            # 存入 Supabase
+            print(f"📍 找到地點: {place_name} ({lat}, {lng})")
+            
+            # 準備寫入資料
             data = {
                 "user_id": user_id,
                 "name": place_name,
@@ -35,21 +61,27 @@ def parse_map_url(target_url, user_id):
                 "original_url": target_url
             }
             
-            res = supabase.table("ig_food_map").insert(data).execute()
-            print(f"✅ 儲存成功: {place_name}")
-            return True
+            # 寫入 Supabase
+            try:
+                supabase.table("ig_food_map").insert(data).execute()
+                print(f"🎉 儲存成功！請重新整理地圖網頁。")
+                return True
+            except Exception as db_err:
+                print(f"💥 資料庫寫入失敗: {db_err}")
+                return False
         else:
-            print("❌ 找不到座標，可能需要更高級的解析策略")
+            print("❌ 找不到座標，可能網址格式不支援。")
             return False
             
     except Exception as e:
-        print(f"💥 發生錯誤: {str(e)}")
+        print(f"💥 程式發生未預期錯誤: {str(e)}")
         return False
 
-# 執行區 (GitHub Actions 會傳入參數)
 if __name__ == "__main__":
-    import sys
-    # 這裡假設 Make.com 傳過來的是 URL 和 UserID
-    # 測試用：python main.py "網址" "UID"
+    # 接收 GitHub Actions 傳進來的參數
     if len(sys.argv) > 2:
-        parse_map_url(sys.argv[1], sys.argv[2])
+        target_url = sys.argv[1]
+        user_id = sys.argv[2]
+        parse_map_url(target_url, user_id)
+    else:
+        print("❌ 參數不足：請確認 YAML 檔案有傳送 url 和 user_id")
