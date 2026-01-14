@@ -1,0 +1,31 @@
+name: Momo Price Tracker
+
+on:
+  repository_dispatch:
+    types: [momo_task]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+          
+      # ★★★ 關鍵：安裝 Chrome 瀏覽器 (比價爬蟲必須) ★★★
+      - name: Setup Chrome
+        uses: browser-actions/setup-chrome@latest
+          
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Momo Parser
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        # 傳入 URL 和 UserID，這會觸發 Python 的「新增模式」
+        run: python momo_price/main.py "${{ github.event.client_payload.url }}" "${{ github.event.client_payload.user_id }}"
