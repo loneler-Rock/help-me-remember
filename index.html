@@ -7,16 +7,19 @@
     
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    
     <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
 
     <style>
         body, html { margin: 0; padding: 0; height: 100%; font-family: "Microsoft JhengHei", sans-serif; }
         #map { height: 100vh; width: 100%; }
-        /* 彈出視窗美化 */
         .custom-popup .leaflet-popup-content-wrapper { border-radius: 10px; }
         .popup-title { font-size: 16px; font-weight: bold; color: #d32f2f; margin-bottom: 5px; }
         .popup-link { display: inline-block; margin-top: 8px; text-decoration: none; color: #1976d2; font-size: 14px; }
+        .no-id-alert {
+            position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
+            background: rgba(0,0,0,0.8); color: white; padding: 15px 25px;
+            border-radius: 30px; z-index: 9999; text-align: center;
+        }
     </style>
 </head>
 <body>
@@ -27,46 +30,60 @@
         // ==========================================
         // 🔑 設定區
         // ==========================================
-        // ★★★ 修正點：變數名稱統一改為 MY_ 開頭，跟下面呼叫時一致 ★★★
         const MY_SUPABASE_URL = "https://eovkimfqgoggxbkvkjxg.supabase.co";
         const MY_SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVvdmtpbWZxZ29nZ3hia3ZranhnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njc3NjI1NzksImV4cCI6MjA4MzMzODU3OX0.akX_HaZQwRh53KJ-ULuc5Syf2ypjhaYOg7DfWhYs8EY";
         // ==========================================
 
-        // 1. 初始化地圖
         const map = L.map('map').setView([23.5, 121], 7);
 
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
         }).addTo(map);
 
-        // 2. 建立連線
-        // 這裡使用的是上面宣告的 MY_SUPABASE_URL，現在名字對起來了！
         const myClient = supabase.createClient(MY_SUPABASE_URL, MY_SUPABASE_ANON_KEY);
 
-        // 3. 抓取資料
-        async function loadLocations() {
-            console.log("🚀 開始讀取地圖資料...");
+        // ★★★ 新功能：從網址抓取 uid 參數 ★★★
+        const urlParams = new URLSearchParams(window.location.search);
+        const currentUid = urlParams.get('uid'); // 抓取 ?uid=後面的東西
 
-            // 使用 myClient 去讀取資料庫
-            const { data, error } = await myClient
-                .from('ig_food_map')
-                .select('*');
+        async function loadLocations() {
+            
+            // 如果網址沒有 uid，就跳出提示
+            if (!currentUid) {
+                const alertDiv = document.createElement('div');
+                alertDiv.className = 'no-id-alert';
+                alertDiv.innerHTML = "⚠️ 這是公開預覽模式 (顯示全部資料)<br>請在 LINE 輸入「我的地圖」來取得您的專屬連結";
+                document.body.appendChild(alertDiv);
+                
+                // 沒 ID 時，預設撈前 50 筆給大家看，或者你可以改成 return 不顯示
+                // 這裡我們維持顯示全部，方便你測試
+            }
+
+            console.log(`🚀 正在讀取使用者 [${currentUid || '全部'}] 的地圖資料...`);
+
+            // 建立查詢
+            let query = myClient.from('ig_food_map').select('*');
+
+            // ★★★ 關鍵邏輯：如果有 uid，就只撈那個人的資料 ★★★
+            if (currentUid) {
+                query = query.eq('user_id', currentUid);
+            }
+
+            const { data, error } = await query;
 
             if (error) {
                 console.error('❌ 讀取失敗:', error);
-                alert("讀取失敗！請按 F12 看 Console 的錯誤訊息");
                 return;
             }
 
-            console.log(`✅ 成功抓到 ${data.length} 筆資料！`, data);
+            console.log(`✅ 成功抓到 ${data.length} 筆資料！`);
 
-            if (data.length === 0) {
-                alert("資料庫是空的！請先用 LINE 傳幾個地點進來～");
+            if (data.length === 0 && currentUid) {
+                alert("你的地圖目前是空的喔！快去傳幾個地點給機器人吧！");
             }
 
             const bounds = [];
 
-            // 畫圖釘
             data.forEach(location => {
                 if (location.latitude && location.longitude) {
                     const marker = L.marker([location.latitude, location.longitude]).addTo(map);
@@ -74,14 +91,13 @@
 
                     const popupContent = `
                         <div class="popup-title">${location.name || '未命名地點'}</div>
-                        <div>你收藏的地點 📍</div>
+                        <div>收藏者：${currentUid ? '你' : '某位網友'}</div>
                         <a href="${location.original_url}" target="_blank" class="popup-link">👉 開啟 Google 地圖</a>
                     `;
                     marker.bindPopup(popupContent);
                 }
             });
 
-            // 自動縮放地圖
             if (bounds.length > 0) {
                 map.fitBounds(bounds);
             }
