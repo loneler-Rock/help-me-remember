@@ -2,6 +2,7 @@ import os
 import re
 import requests
 import sys
+import urllib.parse  # 👈 新增這個工具來翻譯網址亂碼
 from supabase import create_client
 
 def parse_map_url(target_url, user_id):
@@ -19,44 +20,57 @@ def parse_map_url(target_url, user_id):
         supabase = create_client(url, key)
         print(f"🔍 開始解析網址: {target_url}")
         
-        # 偽裝成瀏覽器，避免被 Google 擋
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
         }
         
-        # 策略 A: 還原短網址
+        # 1. 取得網頁內容
         try:
             response = requests.get(target_url, headers=headers, timeout=10)
-            final_url = response.url
+            final_url = response.url # 取得最終網址
             html_content = response.text
         except Exception as e:
             print(f"⚠️ 網址連線失敗: {e}")
             return False
         
-        # 策略 B: 抓取座標
+        # 2. 抓取座標
         coords = re.findall(r'!3d([0-9\.]+)!4d([0-9\.]+)', html_content)
         
         if coords:
             lat, lng = coords[0]
             
-            # ★★★ 優化：改用 meta og:title 抓取準確店名 ★★★
-            name_match = re.search(r'<meta property="og:title" content="(.*?)">', html_content)
+            # 3. 抓取店名 (優先策略：從網址抓，因為最準！)
+            place_name = "未命名地點"
             
-            # 如果 meta 抓不到，才退回去抓 title
-            if name_match:
-                place_name = name_match.group(1).replace(" - Google 地圖", "")
-            else:
-                title_match = re.search(r'<title>(.*?)</title>', html_content)
-                place_name = title_match.group(1).replace(" - Google 地圖", "") if title_match else "未命名地點"
+            # 嘗試從網址解碼 (例如 .../place/奕順軒/...)
+            if "/place/" in final_url:
+                try:
+                    start = final_url.find("/place/") + 7
+                    end = final_url.find("/@", start)
+                    if end != -1:
+                        raw_name = final_url[start:end]
+                        # 把網址亂碼翻譯回中文
+                        decoded_name = urllib.parse.unquote(raw_name).replace("+", " ")
+                        place_name = decoded_name
+                        print(f"✅ 從網址成功解碼店名: {place_name}")
+                except:
+                    pass
+
+            # 如果網址沒抓到，才去抓網頁標題
+            if place_name == "未命名地點":
+                name_match = re.search(r'<meta property="og:title" content="(.*?)">', html_content)
+                if name_match:
+                    title_text = name_match.group(1).replace(" - Google 地圖", "").replace("Google Maps", "")
+                    if title_text.strip(): # 確保不是空白
+                        place_name = title_text
+
+            # 如果還是抓到 Google Maps，就標示一下
+            if "Google Maps" in place_name or "Google 地圖" in place_name:
+                 place_name = "未知地點 (請手動更新)"
+
+            print(f"📍 最終確認地點: {place_name} ({lat}, {lng})")
             
-            # 再次過濾：如果名字還是 "Google Maps"，嘗試從網址解碼
-            if place_name == "Google Maps" or place_name == "Google 地圖":
-                 print("⚠️ 標題抓取過於籠統，嘗試使用備案...")
-                 # 這裡可以放過，或者暫時標記，不影響功能
-            
-            print(f"📍 找到地點: {place_name} ({lat}, {lng})")
-            
-            # 準備寫入資料
+            # 4. 寫入資料庫
             data = {
                 "user_id": user_id,
                 "name": place_name,
