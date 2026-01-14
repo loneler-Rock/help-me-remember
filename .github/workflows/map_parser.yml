@@ -7,6 +7,12 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    
+    # ★★★ 改動這裡：把 env 搬到這裡來 (Job 層級)，這樣全域都吃得到 ★★★
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
     steps:
       - uses: actions/checkout@v3
       
@@ -19,9 +25,5 @@ jobs:
         run: pip install requests supabase
 
       - name: Run parser
-        # ▼▼▼▼▼ 就是缺了這一段！請確認這幾行有貼進去 ▼▼▼▼▼
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-        # ▲▲▲▲▲ 沒有這段，Python 就會說找不到 URL ▲▲▲▲▲
+        # 這裡就不需要再寫 env 了，因為上面已經宣告過了
         run: python ig_map/main.py "${{ github.event.client_payload.url }}" "${{ github.event.client_payload.user_id }}"
