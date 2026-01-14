@@ -13,7 +13,7 @@
     <style>
         body, html { margin: 0; padding: 0; height: 100%; font-family: "Microsoft JhengHei", sans-serif; }
         #map { height: 100vh; width: 100%; }
-        /* 讓地圖彈出視窗漂亮一點 */
+        /* 彈出視窗美化 */
         .custom-popup .leaflet-popup-content-wrapper { border-radius: 10px; }
         .popup-title { font-size: 16px; font-weight: bold; color: #d32f2f; margin-bottom: 5px; }
         .popup-link { display: inline-block; margin-top: 8px; text-decoration: none; color: #1976d2; font-size: 14px; }
@@ -27,78 +27,65 @@
         // ==========================================
         // 🔑 設定區 (請把你的資料填在這裡 !!!)
         // ==========================================
-        // 請去 Supabase -> Settings -> API 複製 URL 和 Anon Key
         const SUPABASE_URL = "https://eovkimfqgoggxbkvkjxg.supabase.co";
-        const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVvdmtpbWZxZ29nZ3hia3ZranhnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njc3NjI1NzksImV4cCI6MjA4MzMzODU3OX0.akX_HaZQwRh53KJ-ULuc5Syf2ypjhaYOg7DfWhYs8EY";
-        // ==========================================
 
-        // 1. 初始化地圖 (預設中心點：台灣)
+        const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVvdmtpbWZxZ29nZ3hia3ZranhnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njc3NjI1NzksImV4cCI6MjA4MzMzODU3OX0.akX_HaZQwRh53KJ-ULuc5Syf2ypjhaYOg7DfWhYs8EY";// ==========================================
+
+        // 1. 初始化地圖
         const map = L.map('map').setView([23.5, 121], 7);
 
-        // 2. 加入底圖 (使用 OpenStreetMap)
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
         }).addTo(map);
 
-        // 3. 連線到 Supabase (修正處：變數改名為 dbClient)
-        // 這裡會檢查 Supabase 是否有正確載入
-        if (typeof supabase === 'undefined') {
-            alert("❌ 錯誤：Supabase 套件載入失敗，請檢查網路連線");
-        }
-        
-        const dbClient = supabase.createClient(MY_SUPABASE_URL, MY_SUPABASE_ANON_KEY);
+        // 2. 建立連線
+        // ★★★ 修正點：這裡變數改名為 'myClient'，避開 'supabase' 這個保留字 ★★★
+        const myClient = supabase.createClient(MY_SUPABASE_URL, MY_SUPABASE_ANON_KEY);
 
-        // 4. 抓取資料並標記
+        // 3. 抓取資料
         async function loadLocations() {
             console.log("🚀 開始讀取地圖資料...");
 
-            // 讀取 ig_food_map 表格
-            const { data, error } = await dbClient
+            // 使用 myClient 去讀取資料庫
+            const { data, error } = await myClient
                 .from('ig_food_map')
                 .select('*');
 
             if (error) {
                 console.error('❌ 讀取失敗:', error);
-                alert("讀取資料失敗！請按 F12 打開 Console 看看是不是 Key 填錯了？");
+                alert("讀取失敗！請按 F12 看 Console 的錯誤訊息");
                 return;
             }
 
             console.log(`✅ 成功抓到 ${data.length} 筆資料！`, data);
 
             if (data.length === 0) {
-                alert("資料庫是空的喔！快去用 LINE 傳幾個地點進來吧！");
+                alert("資料庫是空的！請先用 LINE 傳幾個地點進來～");
             }
 
-            // 建立一個邊界範圍，等等把地圖縮放到可以看到所有點
             const bounds = [];
 
-            // 遍歷每一筆資料，畫出圖釘
+            // 畫圖釘
             data.forEach(location => {
                 if (location.latitude && location.longitude) {
-                    // 畫圖釘
                     const marker = L.marker([location.latitude, location.longitude]).addTo(map);
-                    
-                    // 把座標加入邊界計算
                     bounds.push([location.latitude, location.longitude]);
 
-                    // 設定點擊彈出視窗
                     const popupContent = `
                         <div class="popup-title">${location.name || '未命名地點'}</div>
-                        <div>這是你收藏的好地方！</div>
+                        <div>你收藏的地點 📍</div>
                         <a href="${location.original_url}" target="_blank" class="popup-link">👉 開啟 Google 地圖</a>
                     `;
-                    
                     marker.bindPopup(popupContent);
                 }
             });
 
-            // 如果有點，自動縮放地圖讓所有點都看得到
+            // 自動縮放地圖
             if (bounds.length > 0) {
                 map.fitBounds(bounds);
             }
         }
 
-        // 啟動！
         loadLocations();
 
     </script>
