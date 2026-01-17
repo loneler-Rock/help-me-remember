@@ -76,4 +76,118 @@ def handle_save_task(raw_message, user_id):
     lat, lng = None, None
     
     # 這裡未來可以加爬蟲抓網頁標題
-    temp_title = raw
+    temp_title = raw_message[:30].replace("\n", " ") if raw_message else "未命名地點"
+
+    if target_url:
+        final_url = resolve_url(target_url)
+        lat, lng = parse_google_maps_url(final_url)
+    
+    category = determine_category(temp_title)
+    
+    if lat and lng:
+        data = {"user_id": user_id, "title": temp_title, "url": final_url, "address": final_url, "latitude": lat, "longitude": lng, "category": category, "created_at": "now()"}
+        try:
+            supabase.table("map_spots").insert(data).execute()
+            print(f"✅ 成功儲存: {temp_title} [{category}]")
+        except Exception as e:
+            print(f"❌ 寫入失敗: {e}")
+    else:
+        print("⚠️ 無法解析座標，寫入待處理")
+        data = {"user_id": user_id, "title": "[待處理] " + temp_title, "url": final_url, "address": raw_message, "latitude": 0, "longitude": 0, "category": "其它", "created_at": "now()"}
+        try:
+            supabase.table("map_spots").insert(data).execute()
+        except:
+            pass
+
+# --- 核心功能 B: 雷達 (搜尋最近地點) ---
+
+def handle_radar_task(user_lat, user_lng, user_id):
+    print(f"📡 [雷達模式] 使用者位置: {user_lat}, {user_lng}")
+    
+    try:
+        # 1. 把所有地點抓出來 (如果不超過 1000 筆，這樣最快最穩，不用搞資料庫索引)
+        response = supabase.table("map_spots").select("*").neq("latitude", 0).execute()
+        spots = response.data
+        
+        # 2. Python 算距離並排序
+        for spot in spots:
+            dist = calculate_distance(user_lat, user_lng, spot['latitude'], spot['longitude'])
+            spot['distance_km'] = dist
+            
+        # 3. 取出最近的 5 個
+        nearby_spots = sorted(spots, key=lambda x: x['distance_km'])[:5]
+        
+        if not nearby_spots:
+            print("📭 附近沒有已儲存的地點")
+            # 這裡您可以選擇回傳文字訊息
+            return
+
+        # 4. 製作 LINE Flex Message (旋轉木馬卡片)
+        bubbles = []
+        for spot in nearby_spots:
+            dist_text = f"{spot['distance_km']:.1f} km"
+            # 產生 Google Map 導航連結
+            nav_url = f"https://www.google.com/maps/dir/?api=1&destination={spot['latitude']},{spot['longitude']}"
+            
+            bubble = {
+                "type": "bubble",
+                "size": "micro",
+                "body": {
+                    "type": "box",
+                    "layout": "vertical",
+                    "contents": [
+                        {"type": "text", "text": spot['category'], "weight": "bold", "color": "#1DB446", "size": "xxs"},
+                        {"type": "text", "text": spot['title'], "weight": "bold", "size": "sm", "wrap": True},
+                        {"type": "text", "text": dist_text, "size": "xs", "color": "#aaaaaa", "margin": "xs"}
+                    ]
+                },
+                "footer": {
+                    "type": "box",
+                    "layout": "vertical",
+                    "contents": [
+                        {"type": "button", "style": "link", "height": "sm", "action": {"type": "uri", "label": "導航", "uri": nav_url}}
+                    ]
+                }
+            }
+            bubbles.append(bubble)
+
+        flex_message = {
+            "type": "flex",
+            "altText": "這是在您附近的地點！",
+            "contents": {
+                "type": "carousel",
+                "contents": bubbles
+            }
+        }
+        
+        # ★★★ 關鍵：直接印出 JSON，讓 Make 可以抓去用，或者這裡可以直接呼叫 LINE API 傳送 ★★★
+        # 為了簡單，我們先印出來，看您 Make 怎麼接
+        print("JSON_OUTPUT_START")
+        print(json.dumps(flex_message))
+        print("JSON_OUTPUT_END")
+        
+        # 如果您希望 Python 直接傳給 LINE，我們需要 LINE_CHANNEL_ACCESS_TOKEN
+        # 目前先這樣，確認邏輯通了再加
+        
+    except Exception as e:
+        print(f"❌ 雷達搜尋失敗: {e}")
+
+# --- 主程式進入點 ---
+
+if __name__ == "__main__":
+    if len(sys.argv) > 2:
+        arg1 = sys.argv[1] # raw_message
+        arg2 = sys.argv[2] # user_id
+        
+        # ★ 智慧判斷：如果 arg1 看起來像座標 (例如 "25.033,121.565") -> 雷達模式
+        # 否則 -> 存檔模式
+        if re.match(r'^-?\d+(\.\d+)?,\s*-?\d+(\.\d+)?$', arg1):
+            try:
+                lat_str, lng_str = arg1.split(',')
+                handle_radar_task(float(lat_str), float(lng_str), arg2)
+            except:
+                print("❌ 座標格式錯誤")
+        else:
+            handle_save_task(arg1, arg2)
+    else:
+        print("❌ 參數不足")
