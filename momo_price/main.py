@@ -5,7 +5,7 @@ import time
 import json
 import base64
 import requests
-from urllib.parse import urlparse, parse_qs, unquote # ✅ V10.10 新增: 網址解析工具
+from urllib.parse import urlparse, parse_qs, unquote
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from bs4 import BeautifulSoup
@@ -28,7 +28,6 @@ except Exception as e:
 # --- 2. 工具函式 ---
 
 def decode_base64_safe(data):
-    """自動拆包 Base64"""
     if not data: return ""
     try:
         return base64.b64decode(data).decode('utf-8')
@@ -36,49 +35,62 @@ def decode_base64_safe(data):
         return data
 
 def extract_inner_url(url):
-    """
-    【V10.10 核心】從中轉連結 (reurl.jsp) 提取真正的商品連結
-    """
+    """從中轉連結 (reurl.jsp) 提取真正的商品連結"""
     if not url: return None
-    
-    # 檢查是否有 goodsUrl 參數 (Momo 的中轉特徵)
     if "goodsUrl=" in url:
         try:
             parsed = urlparse(url)
             params = parse_qs(parsed.query)
             if 'goodsUrl' in params:
-                real_url = params['goodsUrl'][0]
-                # 這裡可能需要解碼 (例如 %3A 轉成 :)
-                return unquote(real_url)
+                return unquote(params['goodsUrl'][0])
         except Exception as e:
             print(f"⚠️ 解析內部連結失敗: {e}")
-            
+    return url
+
+def normalize_momo_url(url):
+    """
+    【V10.11 核心功能】將活動頁 (TP) 網址強制轉為標準商品頁 (GoodsDetail)
+    這樣可以確保 HTML 結構統一，必定能抓到 JSON-LD
+    """
+    if not url: return None
+    
+    # 針對 /TP/ 這種活動頁結構進行 ID 提取
+    # 範例: .../TP/TP0001070/goodsDetail/TP00010700001732
+    match = re.search(r'goodsDetail/([A-Za-z0-9]+)', url)
+    if match:
+        product_id = match.group(1)
+        standard_url = f"https://www.momoshop.com.tw/goods/GoodsDetail.jsp?i_code={product_id}"
+        print(f"🔧 強制標準化網址: {standard_url}")
+        return standard_url
+        
     return url
 
 def resolve_short_url(url):
-    """還原短網址 + 提取內部連結"""
+    """還原短網址 -> 提取內部連結 -> (新增) 標準化網址"""
     if not url: return None
     
-    # 1. 判斷是否為不需要還原的長網址
     if "momoshop.com.tw/goods/GoodsDetail" in url and "reurl.jsp" not in url:
         return url
         
     print(f"🔄 正在還原短網址: {url} ...")
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'}
-        # 讓 requests 自動跟隨跳轉
         response = requests.get(url, headers=headers, timeout=10, allow_redirects=True)
         final_url = response.url
         
-        # ★ V10.10: 檢查是否卡在中轉頁，如果是，再挖一層
-        return extract_inner_url(final_url)
+        # 1. 解開 reurl 中轉
+        inner_url = extract_inner_url(final_url)
+        
+        # 2. ★ V10.11: 轉成標準網址
+        normalized_url = normalize_momo_url(inner_url)
+        
+        return normalized_url
         
     except Exception as e:
         print(f"⚠️ 還原網址失敗，將使用原網址: {e}")
         return url
 
 def extract_url_from_text(text):
-    """從雜亂文字中抓出網址"""
     if not text: return None
     decoded_text = decode_base64_safe(text)
     print(f"📦 解碼後內容: {decoded_text}") 
@@ -109,23 +121,28 @@ def extract_json_ld(soup, platform):
 def parse_momo(soup):
     price, title = None, "Momo商品"
     
-    # JSON-LD
+    # 1. JSON-LD (標準頁面一定有這個)
     json_data = extract_json_ld(soup, "momo")
     if json_data:
         if 'offers' in json_data and 'price' in json_data['offers']:
             price = clean_price_text(json_data['offers']['price'])
         if 'name' in json_data: title = json_data['name']
 
-    # 視覺標籤
+    # 2. 視覺標籤 (備用)
     if not price:
-        selectors = ["span.price", "span.seoPrice", "ul.price li.special span.price b", ".priceArea .price", ".special .price"]
+        selectors = [
+            "span.price", "span.seoPrice", 
+            "ul.price li.special span.price b",
+            ".priceArea .price", ".special .price",
+            ".product_price b" # 新增: 另一種常見結構
+        ]
         for sel in selectors:
             tag = soup.select_one(sel)
             if tag:
                 price = clean_price_text(tag.text)
                 if price: break
 
-    # 標題
+    # 3. 標題
     if title == "Momo商品":
         og_title = soup.find("meta", property="og:title")
         title = og_title["content"] if og_title else (soup.title.text.split("- momo")[0].strip() if soup.title else title)
@@ -134,8 +151,6 @@ def parse_momo(soup):
 
 def parse_pchome(soup):
     price, title = None, "PChome商品"
-
-    # JSON-LD
     json_data = extract_json_ld(soup, "pchome")
     if json_data:
         if 'offers' in json_data:
@@ -145,7 +160,6 @@ def parse_pchome(soup):
         if 'name' in json_data: title = json_data['name']
         if price: return price, title
 
-    # Meta & Visual
     if not price:
         meta = soup.find("meta", property="product:price:amount") or soup.find("meta", property="og:price:amount")
         if meta: price = clean_price_text(meta["content"])
@@ -166,8 +180,9 @@ def parse_pchome(soup):
 def get_product_info(base64_str):
     raw_url = extract_url_from_text(base64_str)
     
-    # ★ V10.10: 這裡會執行雙重解析 (短網址 -> 中轉頁 -> 真實頁)
+    # 這裡會執行：還原短網址 -> 解開中轉 -> ★強制轉標準網址
     real_url = resolve_short_url(raw_url)
+    
     print(f"🔍 準備連線: {real_url}")
     
     platform = "unknown"
@@ -178,6 +193,8 @@ def get_product_info(base64_str):
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
+    # 增加反爬蟲對策
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled") 
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
 
     driver = webdriver.Chrome(options=chrome_options)
@@ -232,7 +249,7 @@ if __name__ == "__main__":
         raw_msg = sys.argv[1]
         uid = sys.argv[2]
         
-        print("🚀 V10.10 二次解壓縮版啟動...")
+        print("🚀 V10.11 強制標準化版啟動...")
         
         price, title = get_product_info(raw_msg)
         if price:
