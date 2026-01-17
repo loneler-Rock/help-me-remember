@@ -86,10 +86,8 @@ def clean_price_text(text):
     
     price = int(clean)
     
-    # ★ V10.14 核心修正：低價過濾器
-    # 如果價格小於 10 元，極有可能是「1入」、「1件」或「0元運費」，直接忽略
+    # ★ V10.14 核心修正：低價過濾器 (小於10元當作是數量或雜訊)
     if price < 10:
-        # print(f"⚠️ 忽略不合理低價: {price}")
         return None
         
     return price
@@ -125,4 +123,188 @@ def extract_json_ld(soup, platform):
         try:
             data = json.loads(script.string)
             if isinstance(data, list):
-                for item
+                # ★ 修正點：這裡原本可能有語法錯誤，現在修好了
+                for item in data:
+                    if item.get('@type') == 'Product': return item
+            elif isinstance(data, dict):
+                if data.get('@type') == 'Product': return data
+        except: continue
+    return None
+
+# --- 3. 解析邏輯 ---
+
+def parse_momo(soup):
+    price, title = None, "Momo商品"
+    
+    # 1. JSON-LD (最準)
+    json_data = extract_json_ld(soup, "momo")
+    if json_data:
+        if 'offers' in json_data and 'price' in json_data['offers']:
+            p = clean_price_text(json_data['offers']['price'])
+            if p: price = p
+        if 'name' in json_data: title = json_data['name']
+
+    # 2. 視覺標籤 (如果 JSON-LD 沒抓到或被過濾掉了)
+    if not price:
+        selectors = [
+            "span.price", "span.seoPrice", ".special .price", 
+            ".product_price b", ".goodsPrice .price", 
+            ".d-price .price", "dd.price b", ".amount", ".checkoutPrice"
+        ]
+        for sel in selectors:
+            tags = soup.select(sel)
+            for tag in tags:
+                p = clean_price_text(tag.text)
+                if p: 
+                    price = p
+                    break # 抓到第一個「合理價格」就停止
+            if price: break
+
+    # 3. 暴力搜尋 (最後手段)
+    if not price:
+        html_str = str(soup)
+        # 尋找像 price" >12,345< 這樣的結構
+        matches = re.findall(r'price[^>]*>.*?(\d{1,3}(?:,\d{3})*)', html_str)
+        for m in matches:
+            p = clean_price_text(m)
+            if p:
+                price = p
+                break
+
+    # 標題
+    if title == "Momo商品":
+        og_title = soup.find("meta", property="og:title")
+        title = og_title["content"] if og_title else (soup.title.text.split("- momo")[0].strip() if soup.title else title)
+
+    return price, title
+
+def parse_pchome(soup):
+    price, title = None, "PChome商品"
+    
+    # JSON-LD
+    json_data = extract_json_ld(soup, "pchome")
+    if json_data:
+        if 'offers' in json_data:
+            offers = json_data['offers']
+            raw_p = None
+            if isinstance(offers, dict) and 'price' in offers: raw_p = offers['price']
+            elif isinstance(offers, list) and offers and 'price' in offers[0]: raw_p = offers[0]['price']
+            if raw_p:
+                p = clean_price_text(raw_p)
+                if p: price = p
+        if 'name' in json_data: title = json_data['name']
+
+    # Visual
+    if not price:
+        meta = soup.find("meta", property="product:price:amount") or soup.find("meta", property="og:price:amount")
+        if meta:
+            p = clean_price_text(meta["content"])
+            if p: price = p
+    
+    if not price:
+        for sel in ["#PriceTotal", ".o-prodPrice__price", ".price-info__price", "span[id^='PriceTotal']"]:
+            tag = soup.select_one(sel)
+            if tag: 
+                p = clean_price_text(tag.text)
+                if p: 
+                    price = p
+                    break
+
+    if title == "PChome商品":
+        name_tag = soup.find(id="NickName")
+        title = name_tag.text.strip() if name_tag else (soup.title.text.split("- PChome")[0].strip() if soup.title else title)
+
+    return price, title
+
+def get_product_info(base64_str):
+    decoded_text = decode_base64_safe(base64_str)
+    print(f"📦 解碼後內容: {decoded_text}")
+    
+    raw_url = extract_url_from_text(decoded_text)
+    real_url = resolve_short_url(raw_url)
+    
+    print(f"🔍 準備連線: {real_url}")
+    
+    platform = "unknown"
+    if "momoshop.com.tw" in real_url: platform = "momo"; print("💡 識別為: Momo")
+    elif "pchome.com.tw" in real_url: platform = "pchome"; print("💡 識別為: PChome")
+
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled") 
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
+
+    price, title = None, None
+
+    driver = webdriver.Chrome(options=chrome_options)
+    try:
+        driver.get(real_url)
+        time.sleep(5)
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        
+        if platform == "momo": price, title = parse_momo(soup)
+        elif platform == "pchome": price, title = parse_pchome(soup)
+        else: price, title = parse_momo(soup)
+    except Exception as e:
+        print(f"❌ 爬蟲錯誤: {e}")
+    finally:
+        driver.quit()
+
+    # 保底機制 (如果網頁抓不到，或抓到的是無效值)
+    if (not price) and decoded_text:
+        fallback_price = extract_price_from_user_text(decoded_text)
+        if fallback_price:
+            price = fallback_price
+            print(f"✅ 使用文字保底價格: {price}")
+            if not title or title == "Momo商品":
+                title = decoded_text.split('\n')[0][:50] 
+
+    return price, title
+
+def save_price_record(user_id, raw_url_or_text, price, title):
+    if not supabase: return
+    print(f"💾 儲存中: {title} | ${price}")
+    try:
+        decoded_text = decode_base64_safe(raw_url_or_text)
+        clean_url = extract_url_from_text(decoded_text)
+        real_url = resolve_short_url(clean_url)
+
+        product_data = {
+            "user_id": user_id,
+            "original_url": real_url,
+            "current_price": price,
+            "product_name": title,
+            "is_active": True,
+            "updated_at": "now()"
+        }
+        existing = supabase.table("products").select("id").eq("original_url", real_url).eq("user_id", user_id).execute()
+        
+        if existing.data:
+            pid = existing.data[0]['id']
+            supabase.table("products").update(product_data).eq("id", pid).execute()
+        else:
+            res = supabase.table("products").insert(product_data).execute()
+            pid = res.data[0]['id'] if res.data else None
+
+        if pid:
+            supabase.table("price_history").insert({"product_id": pid, "price": price, "recorded_at": "now()"}).execute()
+            print("✅ 成功")
+    except Exception as e:
+        print(f"❌ 寫入失敗: {e}")
+
+if __name__ == "__main__":
+    if len(sys.argv) > 2:
+        raw_msg = sys.argv[1]
+        uid = sys.argv[2]
+        
+        print("🚀 V10.14 價格合理性過濾版啟動...")
+        
+        price, title = get_product_info(raw_msg)
+        if price:
+            save_price_record(uid, raw_msg, price, title)
+        else:
+            print("❌ 失敗: 全面搜尋後仍無法抓取")
+    else:
+        print("❌ 參數不足")
