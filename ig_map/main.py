@@ -1,101 +1,134 @@
 import os
 import re
 import requests
-import sys
-import urllib.parse  # 👈 新增這個工具來翻譯網址亂碼
-from supabase import create_client
+from supabase import create_client, Client
 
-def parse_map_url(target_url, user_id):
-    print("==============================")
-    print("🚀 系統啟動...")
-    
-    url = os.environ.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+# --- 初始化 ---
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-    if not url or not key:
-        print("❌ 錯誤：環境變數缺失，請檢查 Secrets 設定。")
-        return False
-
+def resolve_url(url):
+    """
+    將短網址 (goo.gl, maps.app.goo.gl) 還原成真實的長網址
+    並過濾掉 googleusercontent 這種縮圖網址
+    """
     try:
-        supabase = create_client(url, key)
-        print(f"🔍 開始解析網址: {target_url}")
-        
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-        }
-        
-        # 1. 取得網頁內容
-        try:
-            response = requests.get(target_url, headers=headers, timeout=10)
-            final_url = response.url # 取得最終網址
-            html_content = response.text
-        except Exception as e:
-            print(f"⚠️ 網址連線失敗: {e}")
-            return False
-        
-        # 2. 抓取座標
-        coords = re.findall(r'!3d([0-9\.]+)!4d([0-9\.]+)', html_content)
-        
-        if coords:
-            lat, lng = coords[0]
-            
-            # 3. 抓取店名 (優先策略：從網址抓，因為最準！)
-            place_name = "未命名地點"
-            
-            # 嘗試從網址解碼 (例如 .../place/奕順軒/...)
-            if "/place/" in final_url:
-                try:
-                    start = final_url.find("/place/") + 7
-                    end = final_url.find("/@", start)
-                    if end != -1:
-                        raw_name = final_url[start:end]
-                        # 把網址亂碼翻譯回中文
-                        decoded_name = urllib.parse.unquote(raw_name).replace("+", " ")
-                        place_name = decoded_name
-                        print(f"✅ 從網址成功解碼店名: {place_name}")
-                except:
-                    pass
-
-            # 如果網址沒抓到，才去抓網頁標題
-            if place_name == "未命名地點":
-                name_match = re.search(r'<meta property="og:title" content="(.*?)">', html_content)
-                if name_match:
-                    title_text = name_match.group(1).replace(" - Google 地圖", "").replace("Google Maps", "")
-                    if title_text.strip(): # 確保不是空白
-                        place_name = title_text
-
-            # 如果還是抓到 Google Maps，就標示一下
-            if "Google Maps" in place_name or "Google 地圖" in place_name:
-                 place_name = "未知地點 (請手動更新)"
-
-            print(f"📍 最終確認地點: {place_name} ({lat}, {lng})")
-            
-            # 4. 寫入資料庫
-            data = {
-                "user_id": user_id,
-                "name": place_name,
-                "latitude": float(lat),
-                "longitude": float(lng),
-                "original_url": target_url
-            }
-            
-            try:
-                supabase.table("ig_food_map").insert(data).execute()
-                print(f"🎉 儲存成功！資料庫已更新。")
-                return True
-            except Exception as db_err:
-                print(f"💥 資料庫寫入失敗: {db_err}")
-                return False
-        else:
-            print("❌ 找不到座標，可能網址格式不支援。")
-            return False
-            
+        # 模擬瀏覽器行為，避免被擋
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        response = requests.head(url, allow_redirects=True, headers=headers, timeout=10)
+        final_url = response.url
+        print(f"🔍 [解析] 原始: {url} -> 還原: {final_url}")
+        return final_url
     except Exception as e:
-        print(f"💥 程式發生未預期錯誤: {str(e)}")
-        return False
+        print(f"⚠️ 網址還原失敗: {e}")
+        return url
 
-if __name__ == "__main__":
-    if len(sys.argv) > 2:
-        parse_map_url(sys.argv[1], sys.argv[2])
+def extract_map_url(text):
+    """
+    從雜亂的文字中，精準抓出 Google Maps 的連結
+    優先抓取 maps.app.goo.gl 或 google.com/maps
+    """
+    # 這是最強的過濾器：只抓符合地圖特徵的網址
+    # 1. 抓 goo.gl 或 maps.app.goo.gl
+    short_pattern = r'(https?://(?:maps\.app\.goo\.gl|goo\.gl/maps)/[a-zA-Z0-9]+)'
+    # 2. 抓 google.com/maps 長網址
+    long_pattern = r'(https?://(?:www\.)?google\.com/maps/[^\s]+)'
+    
+    match_short = re.search(short_pattern, text)
+    if match_short:
+        return match_short.group(1)
+        
+    match_long = re.search(long_pattern, text)
+    if match_long:
+        return match_long.group(1)
+        
+    # 如果都沒抓到，但文字裡有 http，試著抓出來看看 (最後手段)
+    fallback_pattern = r'(https?://[^\s]+)'
+    match_fallback = re.search(fallback_pattern, text)
+    if match_fallback:
+        found_url = match_fallback.group(1)
+        # 如果抓到的是 googleusercontent (縮圖)，我們直接放棄這個，因為它不是地圖
+        if "googleusercontent.com" in found_url:
+            print("⚠️ 忽略縮圖網址: " + found_url)
+            return None
+        return found_url
+        
+    return None
+
+def parse_google_maps_url(url):
+    """
+    解析網址中的經緯度
+    """
+    # 處理 @lat,lng,z 格式
+    regex_at = r'@(-?\d+\.\d+),(-?\d+\.\d+)'
+    match = re.search(regex_at, url)
+    if match:
+        return float(match.group(1)), float(match.group(2))
+        
+    # 處理 ?q=lat,lng 格式
+    regex_q = r'q=(-?\d+\.\d+),(-?\d+\.\d+)'
+    match = re.search(regex_q, url)
+    if match:
+        return float(match.group(1)), float(match.group(2))
+    
+    # 處理 search/lat,lng 格式
+    regex_search = r'search/(-?\d+\.\d+),\s*(-?\d+\.\d+)'
+    match = re.search(regex_search, url)
+    if match:
+        return float(match.group(1)), float(match.group(2))
+
+    return None, None
+
+def save_to_supabase(user_id, name, address, lat, lng, raw_url):
+    """
+    寫入資料庫
+    """
+    data = {
+        "user_id": user_id,
+        "title": name,
+        "address": address,
+        "latitude": lat,
+        "longitude": lng,
+        "created_at": "now()"
+    }
+    # 嘗試寫入，如果失敗印出錯誤
+    try:
+        supabase.table("locations").insert(data).execute()
+        print(f"✅ 成功儲存: {name}")
+    except Exception as e:
+        print(f"❌ Supabase 寫入錯誤: {e}")
+
+# --- 主要執行邏輯 ---
+def handle_map_task(data):
+    print("🚀 [Python] 收到地圖任務")
+    raw_message = data.get("raw_message", "")
+    user_id = data.get("user_id", "unknown")
+    
+    print(f"📩 原始訊息: {raw_message}")
+
+    # 1. 從文字中提取網址
+    target_url = extract_map_url(raw_message)
+    
+    lat, lng = None, None
+    final_url = target_url
+
+    if target_url:
+        # 2. 還原短網址 (取得真實連結)
+        final_url = resolve_url(target_url)
+        
+        # 3. 嘗試解析座標
+        lat, lng = parse_google_maps_url(final_url)
+    
+    # 4. 根據結果寫入資料庫
+    if lat and lng:
+        # 成功解析出座標
+        # 這裡簡單用「新地點」當標題，實際專案通常會再爬取網頁標題(BeautifulSoup)
+        # 但為了不讓程式太複雜報錯，我們先存基本資料
+        save_to_supabase(user_id, "新地點 (已解析)", final_url, lat, lng, final_url)
     else:
-        print("❌ 參數不足")
+        # ❌ 解析失敗，但我們照樣存！
+        print("⚠️ 無法解析座標，寫入待處理清單")
+        # 標題設為 [待處理]，地址欄位放入原始文字或網址，座標設為 0
+        fallback_content = final_url if final_url else raw_message
+        save_to_supabase(user_id, "[待處理] 解析失敗", fallback_content, 0.0, 0.0, fallback_content)
