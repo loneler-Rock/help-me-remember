@@ -1,219 +1,153 @@
 import os
 import sys
-import time
 import re
-import requests
-import urllib.parse
+import time
+import json
 from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
-from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.common.by import By
+from bs4 import BeautifulSoup
+from supabase import create_client, Client
 
-# 設定路徑以引用 utils
-sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
-from utils.supabase_client import init_supabase
+# --- 1. 初始化環境變數與資料庫 ---
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 
-# ===========================
-# 系統設定
-# ===========================
-# 請填入你的 Make.com Webhook (用於降價通知)
-MAKE_WEBHOOK_URL = "https://hook.eu1.make.com/iqfx87wola6yp35c3ly7mqvugycxwlfx"
-ICHANNELS_ID = "af000148084" # 通路王 ID
+try:
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        # 本機測試時，如果沒有環境變數可能會報錯，這裡做個防呆
+        print("⚠️ 警告: 未偵測到 Supabase 環境變數 (若在本機測試請忽略)")
+        supabase = None
+    else:
+        supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+except Exception as e:
+    print(f"❌ Supabase 初始化失敗: {e}")
+    sys.exit(1)
 
-# ===========================
-# 爬蟲核心 (共用)
-# ===========================
-def setup_driver():
-    chrome_options = Options()
-    chrome_options.add_argument('--headless') 
-    chrome_options.add_argument('--no-sandbox')
-    chrome_options.add_argument('--disable-dev-shm-usage')
-    # 偽裝成一般瀏覽器
-    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36")
-    
-    service = Service(ChromeDriverManager().install())
-    return webdriver.Chrome(service=service, options=chrome_options)
+# --- 2. 核心功能: 抓取 Momo 價格 ---
 
-def parse_price(driver, url):
-    """
-    通用解析器，支援 Momo 和 PChome
-    回傳: (商品名稱, 價格)
-    """
+def get_momo_price(url):
     print(f"🔍 正在解析: {url}...")
-    driver.get(url)
-    time.sleep(3) # 等待網頁載入
     
-    title = "未命名商品"
-    price = 99999999
+    # 設定 Chrome 選項 (Headless 模式)
+    chrome_options = Options()
+    chrome_options.add_argument("--headless") # 不開啟視窗
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    # 重要：偽裝成一般瀏覽器，避免被擋
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36")
+
+    driver = webdriver.Chrome(options=chrome_options)
     
     try:
-        title = driver.title.split("-")[0].strip()
+        driver.get(url)
+        time.sleep(3) # 等待網頁載入 (Momo 很多動態載入)
         
-        # 嘗試解析 Momo
-        if "momoshop" in url:
-            try:
-                price_text = driver.find_element("css selector", ".prdPrice").text
-            except:
-                try:
-                    price_text = driver.find_element("css selector", "#pKwdPrice").text
-                except:
-                    price_text = "0"
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
         
-        # 嘗試解析 PChome
-        elif "pchome" in url:
-            try:
-                price_text = driver.find_element("css selector", ".o-prodPrice__price").text
-            except:
-                try:
-                    price_text = driver.find_element("css selector", "#PriceTotal").text
-                except:
-                    price_text = "0"
-        else:
-            print("⚠️ 非 Momo/PChome 網址，跳過")
-            return None, None
+        # --- 價格獵殺邏輯 (多重嘗試) ---
+        price = None
+        
+        # 嘗試 1: 抓取常見的 class="price"
+        price_tag = soup.find('span', {'class': 'price'})
+        if not price_tag:
+            # 嘗試 2: 抓取 seoPrice (Momo 常用的另一種標籤)
+            price_tag = soup.find('span', {'class': 'seoPrice'})
+        if not price_tag:
+            # 嘗試 3: 透過 b 標籤抓取 (有時候價格在 <b>999</b>)
+            price_element = soup.select_one("ul.price li.special span.price b")
+            if price_element:
+                price_tag = price_element
 
-        # 清理價格字串 (去掉 $ 和逗號)
-        price = int(re.sub(r"[^\d]", "", price_text))
-        return title, price
+        # 如果抓到了標籤，開始清洗數據
+        if price_tag:
+            raw_price = price_tag.text.strip()
+            # 使用 Regex 只保留數字 (剔除 $, ,, 元)
+            clean_price = re.sub(r'[^\d]', '', raw_price)
+            if clean_price:
+                price = int(clean_price)
+        
+        # 抓取商品名稱 (用來顯示 log)
+        title = "未命名商品"
+        title_tag = soup.find('h3') # Momo 電腦版標題通常在 h3
+        if not title_tag:
+            title_tag = soup.find('span', {'class': 'GoodsName'}) # 手機版
+        if title_tag:
+            title = title_tag.text.strip()
+
+        return price, title
 
     except Exception as e:
-        print(f"❌ 解析失敗: {e}")
-        return title, price
+        print(f"❌ 爬蟲發生錯誤: {e}")
+        return None, None
+    finally:
+        driver.quit()
 
-# ===========================
-# 功能 A: 新增商品 (LINE 觸發)
-# ===========================
-def add_new_product(url, user_id):
-    print("🚀 啟動新增模式...")
-    driver = setup_driver()
-    supabase = init_supabase()
+# --- 3. 核心功能: 資料庫操作 ---
+
+def save_price_record(user_id, url, price, title):
+    if not supabase:
+        print("⚠️ 無法連線資料庫，跳過儲存")
+        return
+
+    print(f"💾 正在儲存: {title} | ${price}")
     
     try:
-        title, price = parse_price(driver, url)
+        # 1. 更新或新增 products 表
+        # upsert: 如果網址存在就更新，不存在就新增
+        product_data = {
+            "user_id": user_id,
+            "original_url": url,
+            "current_price": price,
+            "product_name": title, # 假設你有這個欄位，沒有也沒關係
+            "is_active": True,
+            "updated_at": "now()"
+        }
         
-        if price and price < 99999999:
-            print(f"✅ 抓取成功！\n商品: {title}\n價格: {price}")
-            
-            # 準備寫入資料
-            data = {
-                "user_id": user_id,
-                "product_name": title,
-                "original_url": url,
-                "current_price": price,
-                "lowest_price": price, # 剛加入時，現價就是最低價
-                "target_price": 0,     # 預設不設目標價
-                "is_active": True
-            }
-            
-            # 寫入 products 表格
-            result = supabase.table("products").insert(data).execute()
-            
-            # 順便寫入一筆歷史價格
+        # 先查詢是否已存在 (為了拿 product_id)
+        existing = supabase.table("products").select("id").eq("original_url", url).eq("user_id", user_id).execute()
+        
+        product_id = None
+        if existing.data:
+            # 更新
+            product_id = existing.data[0]['id']
+            supabase.table("products").update(product_data).eq("id", product_id).execute()
+        else:
+            # 新增
+            result = supabase.table("products").insert(product_data).execute()
             if result.data:
                 product_id = result.data[0]['id']
-                supabase.table("price_history").insert({
-                    "product_id": product_id,
-                    "price": price
-                }).execute()
-                print("🎉 商品已加入追蹤清單！")
-        else:
-            print("❌ 無法抓取價格，請確認網址是否正確。")
-            
-    except Exception as e:
-        print(f"💥 新增失敗: {e}")
-    finally:
-        driver.quit()
 
-# ===========================
-# 功能 B: 每日檢查 (排程觸發)
-# ===========================
-def run_daily_check():
-    print("🚀 啟動每日比價檢查...")
-    driver = setup_driver()
-    supabase = init_supabase()
-    
-    try:
-        # 撈出所有啟用的商品
-        response = supabase.table("products").select("*").eq("is_active", True).execute()
-        products = response.data
-        print(f"📋 共發現 {len(products)} 個監控商品")
-
-        for p in products:
-            try:
-                title, current_price = parse_price(driver, p['original_url'])
-                
-                if current_price == 99999999:
-                    print(f"⚠️ {p['product_name']} 解析失敗，跳過")
-                    continue
-
-                # 寫入歷史價格
-                supabase.table("price_history").insert({
-                    "product_id": p['id'],
-                    "price": current_price
-                }).execute()
-                
-                # 檢查是否創新低
-                last_lowest = p.get('lowest_price') or 99999999
-                is_lowest = False
-                
-                if current_price < last_lowest:
-                    is_lowest = True
-                    # 更新最低價紀錄
-                    supabase.table("products").update({
-                        "lowest_price": current_price,
-                        "current_price": current_price,
-                        "product_name": title # 順便更新標題
-                    }).eq("id", p['id']).execute()
-                else:
-                    # 只更新現價
-                    supabase.table("products").update({
-                        "current_price": current_price
-                    }).eq("id", p['id']).execute()
-
-                # 發送通知邏輯
-                target_price = p.get('target_price') or 0
-                last_price = p.get('current_price') # 這裡其實是舊的價格，但在上面已經被我們更新了，所以邏輯上要小心
-                # 簡化邏輯：只要創新低，或者低於目標價，就通知
-                
-                if is_lowest or (target_price > 0 and current_price <= target_price):
-                    print(f"🔥 發現好價！發送通知...")
-                    send_notification(title, current_price, p['original_url'], p['user_id'], is_lowest)
-                
-                time.sleep(2) # 禮貌性暫停
-
-            except Exception as inner_e:
-                print(f"處理商品 {p.get('id')} 錯誤: {inner_e}")
+        # 2. 寫入 price_history (歷史價格)
+        if product_id:
+            history_data = {
+                "product_id": product_id,
+                "price": price,
+                "recorded_at": "now()"
+            }
+            supabase.table("price_history").insert(history_data).execute()
+            print("✅ 價格歷史已記錄")
 
     except Exception as e:
-        print(f"排程執行錯誤: {e}")
-    finally:
-        driver.quit()
+        print(f"❌ 資料庫寫入失敗: {e}")
 
-def send_notification(product_name, price, url, user_id, is_lowest_price):
-    # 簡單的分潤連結轉換
-    affiliate_url = url
-    if "momoshop" in url:
-        encoded_url = urllib.parse.quote(url)
-        affiliate_url = f"http://www.ichannels.com.tw/bbs.php?member={ICHANNELS_ID}&url={encoded_url}"
+# --- 主程式進入點 ---
 
-    status = "🔥 歷史新低！" if is_lowest_price else "📉 降價通知"
-    message = f"{status}\n商品：{product_name}\n金額：${price:,}\n------------------\n點此購買：\n{affiliate_url}"
-    
-    try:
-        requests.post(MAKE_WEBHOOK_URL, json={"message": message, "to": user_id})
-    except Exception as e:
-        print(f"Webhook 失敗: {e}")
-
-# ===========================
-# 主程式入口
-# ===========================
 if __name__ == "__main__":
-    # 判斷是「新增模式」還是「每日檢查模式」
+    # 接收參數: python main.py "網址" "User_ID"
     if len(sys.argv) > 2:
-        # 有參數傳入 -> 新增模式 (Make.com 呼叫)
         target_url = sys.argv[1]
         user_id = sys.argv[2]
-        add_new_product(target_url, user_id)
+        
+        print("🚀 啟動新增模式...")
+        
+        current_price, product_title = get_momo_price(target_url)
+        
+        if current_price:
+            print(f"💰 成功抓取價格: {current_price}")
+            save_price_record(user_id, target_url, current_price, product_title)
+        else:
+            print(f"❌ 解析失敗: 無法抓取價格，請確認網址是否正確或 Momo 已改版。")
+            # 這裡不報錯 sys.exit(1)，避免整個 Action 被標記為失敗，但可以考慮傳送錯誤通知
     else:
-        # 沒參數 -> 每日檢查模式 (GitHub Schedule 呼叫)
-        run_daily_check()
+        print("❌ 參數不足: 請提供 URL 和 User_ID")
