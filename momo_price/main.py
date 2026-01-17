@@ -164,4 +164,80 @@ def parse_pchome(soup):
     return price, title
 
 def get_product_info(base64_str):
-    raw_url = extract_url
+    raw_url = extract_url_from_text(base64_str)
+    
+    # ★ V10.10: 這裡會執行雙重解析 (短網址 -> 中轉頁 -> 真實頁)
+    real_url = resolve_short_url(raw_url)
+    print(f"🔍 準備連線: {real_url}")
+    
+    platform = "unknown"
+    if "momoshop.com.tw" in real_url: platform = "momo"; print("💡 識別為: Momo")
+    elif "pchome.com.tw" in real_url: platform = "pchome"; print("💡 識別為: PChome")
+
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
+
+    driver = webdriver.Chrome(options=chrome_options)
+    try:
+        driver.get(real_url)
+        time.sleep(5)
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        
+        if platform == "momo": return parse_momo(soup)
+        elif platform == "pchome": return parse_pchome(soup)
+        else: return parse_momo(soup)
+    except Exception as e:
+        print(f"❌ 爬蟲錯誤: {e}")
+        return None, None
+    finally:
+        driver.quit()
+
+# --- 4. 儲存 ---
+
+def save_price_record(user_id, raw_url_or_text, price, title):
+    if not supabase: return
+    print(f"💾 儲存中: {title} | ${price}")
+    try:
+        clean_url = extract_url_from_text(raw_url_or_text)
+        real_url = resolve_short_url(clean_url)
+
+        product_data = {
+            "user_id": user_id,
+            "original_url": real_url,
+            "current_price": price,
+            "product_name": title,
+            "is_active": True,
+            "updated_at": "now()"
+        }
+        existing = supabase.table("products").select("id").eq("original_url", real_url).eq("user_id", user_id).execute()
+        
+        if existing.data:
+            pid = existing.data[0]['id']
+            supabase.table("products").update(product_data).eq("id", pid).execute()
+        else:
+            res = supabase.table("products").insert(product_data).execute()
+            pid = res.data[0]['id'] if res.data else None
+
+        if pid:
+            supabase.table("price_history").insert({"product_id": pid, "price": price, "recorded_at": "now()"}).execute()
+            print("✅ 成功")
+    except Exception as e:
+        print(f"❌ 寫入失敗: {e}")
+
+if __name__ == "__main__":
+    if len(sys.argv) > 2:
+        raw_msg = sys.argv[1]
+        uid = sys.argv[2]
+        
+        print("🚀 V10.10 二次解壓縮版啟動...")
+        
+        price, title = get_product_info(raw_msg)
+        if price:
+            save_price_record(uid, raw_msg, price, title)
+        else:
+            print("❌ 失敗: 無法抓取")
+    else:
+        print("❌ 參數不足")
