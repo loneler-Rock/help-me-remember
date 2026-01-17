@@ -49,41 +49,42 @@ def extract_inner_url(url):
 
 def normalize_momo_url(url):
     """
-    【V10.11 核心功能】將活動頁 (TP) 網址強制轉為標準商品頁 (GoodsDetail)
-    這樣可以確保 HTML 結構統一，必定能抓到 JSON-LD
+    【V10.12 修正】智慧網址標準化
+    1. 純數字 ID -> 轉標準頁面 (JSON-LD 最完整)
+    2. TP 開頭 ID -> 保持原樣 (避免死檔)
     """
     if not url: return None
     
-    # 針對 /TP/ 這種活動頁結構進行 ID 提取
-    # 範例: .../TP/TP0001070/goodsDetail/TP00010700001732
+    # 嘗試抓取 ID
     match = re.search(r'goodsDetail/([A-Za-z0-9]+)', url)
     if match:
         product_id = match.group(1)
-        standard_url = f"https://www.momoshop.com.tw/goods/GoodsDetail.jsp?i_code={product_id}"
-        print(f"🔧 強制標準化網址: {standard_url}")
-        return standard_url
+        
+        # ★ 關鍵修正: 如果是 TP 開頭，絕對不要動它！
+        if product_id.startswith("TP"):
+            print(f"ℹ️ 偵測到活動商品 (TP)，保持特殊網址結構")
+            return url
+            
+        # 只有純數字 ID 才轉標準網址
+        if product_id.isdigit():
+            standard_url = f"https://www.momoshop.com.tw/goods/GoodsDetail.jsp?i_code={product_id}"
+            print(f"🔧 標準化商品網址: {standard_url}")
+            return standard_url
         
     return url
 
 def resolve_short_url(url):
-    """還原短網址 -> 提取內部連結 -> (新增) 標準化網址"""
     if not url: return None
-    
     if "momoshop.com.tw/goods/GoodsDetail" in url and "reurl.jsp" not in url:
         return url
         
     print(f"🔄 正在還原短網址: {url} ...")
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'}
+        headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(url, headers=headers, timeout=10, allow_redirects=True)
         final_url = response.url
-        
-        # 1. 解開 reurl 中轉
         inner_url = extract_inner_url(final_url)
-        
-        # 2. ★ V10.11: 轉成標準網址
-        normalized_url = normalize_momo_url(inner_url)
-        
+        normalized_url = normalize_momo_url(inner_url) # 這裡會執行智慧判斷
         return normalized_url
         
     except Exception as e:
@@ -121,20 +122,26 @@ def extract_json_ld(soup, platform):
 def parse_momo(soup):
     price, title = None, "Momo商品"
     
-    # 1. JSON-LD (標準頁面一定有這個)
+    # 1. JSON-LD (優先)
     json_data = extract_json_ld(soup, "momo")
     if json_data:
         if 'offers' in json_data and 'price' in json_data['offers']:
             price = clean_price_text(json_data['offers']['price'])
         if 'name' in json_data: title = json_data['name']
 
-    # 2. 視覺標籤 (備用)
+    # 2. 視覺標籤 (全面覆蓋一般頁與活動頁)
     if not price:
         selectors = [
-            "span.price", "span.seoPrice", 
-            "ul.price li.special span.price b",
-            ".priceArea .price", ".special .price",
-            ".product_price b" # 新增: 另一種常見結構
+            # 標準頁面
+            "span.price", "span.seoPrice", "ul.price li.special span.price b",
+            ".priceArea .price", ".special .price", ".product_price b",
+            
+            # ★ V10.12 新增: 針對 TP 活動頁的常見結構
+            ".goodsPrice .price", 
+            ".d-price .price", 
+            "dd.price b", 
+            ".amount",
+            ".checkoutPrice"
         ]
         for sel in selectors:
             tag = soup.select_one(sel)
@@ -179,8 +186,6 @@ def parse_pchome(soup):
 
 def get_product_info(base64_str):
     raw_url = extract_url_from_text(base64_str)
-    
-    # 這裡會執行：還原短網址 -> 解開中轉 -> ★強制轉標準網址
     real_url = resolve_short_url(raw_url)
     
     print(f"🔍 準備連線: {real_url}")
@@ -193,7 +198,6 @@ def get_product_info(base64_str):
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    # 增加反爬蟲對策
     chrome_options.add_argument("--disable-blink-features=AutomationControlled") 
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
 
@@ -249,7 +253,7 @@ if __name__ == "__main__":
         raw_msg = sys.argv[1]
         uid = sys.argv[2]
         
-        print("🚀 V10.11 強制標準化版啟動...")
+        print("🚀 V10.12 智慧雙軌制啟動...")
         
         price, title = get_product_info(raw_msg)
         if price:
