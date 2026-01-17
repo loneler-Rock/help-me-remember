@@ -5,7 +5,6 @@ import time
 import json
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
 from bs4 import BeautifulSoup
 from supabase import create_client, Client
 
@@ -23,81 +22,132 @@ except Exception as e:
     print(f"❌ Supabase 初始化失敗: {e}")
     sys.exit(1)
 
-# --- 2. 解析邏輯區 (Momo & PChome 分流) ---
+# --- 2. 工具函式 ---
 
 def clean_price_text(text):
-    """工具函式: 清除 $ , 元 等雜訊，只留數字"""
+    """清除 $ , 元 等雜訊，只留數字"""
     if not text: return None
-    # 移除千分位逗號與非數字字元
-    clean = re.sub(r'[^\d]', '', text)
+    # 轉成字串並移除所有非數字字符
+    clean = re.sub(r'[^\d]', '', str(text))
     return int(clean) if clean else None
 
+def extract_json_ld(soup, platform):
+    """
+    【高階技巧】從 SEO 結構化資料中提取價格
+    這是最穩定的方法，因為網站很少改動給 Google 看的資料
+    """
+    scripts = soup.find_all('script', type='application/ld+json')
+    for script in scripts:
+        try:
+            data = json.loads(script.string)
+            
+            # PChome 的結構通常是一個列表，或者單一物件
+            if isinstance(data, list):
+                for item in data:
+                    if item.get('@type') == 'Product':
+                        return item
+            elif isinstance(data, dict):
+                if data.get('@type') == 'Product':
+                    return data
+        except:
+            continue
+    return None
+
+# --- 3. 平台解析邏輯 ---
+
 def parse_momo(soup):
-    """Momo 專用解析器"""
+    """Momo 解析邏輯 (混合模式)"""
     price = None
     title = "Momo商品"
 
-    # A. 抓價格
-    price_tag = soup.find('span', {'class': 'price'})
-    if not price_tag: price_tag = soup.find('span', {'class': 'seoPrice'})
-    if not price_tag:
-        # 嘗試抓取特價區塊
-        price_element = soup.select_one("ul.price li.special span.price b")
-        if price_element: price_tag = price_element
+    # 1. 嘗試 JSON-LD (Momo 有時候有)
+    json_data = extract_json_ld(soup, "momo")
+    if json_data:
+        if 'offers' in json_data and 'price' in json_data['offers']:
+            price = clean_price_text(json_data['offers']['price'])
+        if 'name' in json_data:
+            title = json_data['name']
 
-    if price_tag:
-        price = clean_price_text(price_tag.text)
+    # 2. 如果 JSON-LD 沒抓到，使用傳統 CSS Selector
+    if not price:
+        price_tag = soup.find('span', {'class': 'price'})
+        if not price_tag: price_tag = soup.find('span', {'class': 'seoPrice'})
+        if not price_tag:
+            price_element = soup.select_one("ul.price li.special span.price b")
+            if price_element: price_tag = price_element
+        
+        if price_tag:
+            price = clean_price_text(price_tag.text)
 
-    # B. 抓標題
-    og_title = soup.find("meta", property="og:title")
-    if og_title and og_title.get("content"):
-        title = og_title["content"]
-    else:
-        page_title = soup.find("title")
-        if page_title:
-            title = page_title.text.split("- momo")[0].strip()
+    # 3. 標題後補
+    if title == "Momo商品":
+        og_title = soup.find("meta", property="og:title")
+        if og_title: title = og_title["content"]
+        else:
+            page_title = soup.find("title")
+            if page_title: title = page_title.text.split("- momo")[0].strip()
 
     return price, title
 
 def parse_pchome(soup):
-    """PChome 專用解析器"""
+    """PChome 解析邏輯 (JSON-LD 優先)"""
     price = None
     title = "PChome商品"
 
-    # A. 抓價格 (PChome 的價格 ID 比較固定)
-    # 策略 1: 標準 ID (PriceTotal)
-    price_tag = soup.find(id="PriceTotal")
-    
-    # 策略 2: 新版介面 Class (有時候會在 o-prodPrice__price)
-    if not price_tag:
-        price_tag = soup.find("span", class_="o-prodPrice__price")
-    
-    # 策略 3: Meta Tag
-    if not price_tag:
+    # --- 策略 A: JSON-LD (最強大) ---
+    # PChome 幾乎一定有這個，且包含了精確價格
+    json_data = extract_json_ld(soup, "pchome")
+    if json_data:
+        # print(f"DEBUG: 找到 JSON-LD 資料") # 除錯用
+        if 'offers' in json_data:
+            offers = json_data['offers']
+            # PChome 的 offers 有時是 list 有時是 dict
+            if isinstance(offers, dict) and 'price' in offers:
+                price = clean_price_text(offers['price'])
+            elif isinstance(offers, list) and len(offers) > 0 and 'price' in offers[0]:
+                price = clean_price_text(offers[0]['price'])
+        
+        if 'name' in json_data:
+            title = json_data['name']
+            
+        if price: return price, title
+
+    # --- 策略 B: Meta Tags (次要穩定) ---
+    if not price:
         meta_price = soup.find("meta", property="product:price:amount")
+        if not meta_price: meta_price = soup.find("meta", property="og:price:amount")
+        
         if meta_price:
-            return clean_price_text(meta_price["content"]), "PChome商品"
+            price = clean_price_text(meta_price["content"])
 
-    if price_tag:
-        price = clean_price_text(price_tag.text)
+    # --- 策略 C: 暴力視覺搜尋 (最後手段) ---
+    if not price:
+        # PChome 的價格區塊經常變動，這裡列出幾種常見的
+        selectors = [
+            "#PriceTotal", 
+            ".o-prodPrice__price", 
+            ".price-info__price",
+            "span[id^='PriceTotal']"
+        ]
+        for sel in selectors:
+            tag = soup.select_one(sel)
+            if tag:
+                price = clean_price_text(tag.text)
+                if price: break
 
-    # B. 抓標題
-    # PChome 商品名稱通常在 id="NickName"
-    name_tag = soup.find(id="NickName")
-    if name_tag:
-        title = name_tag.text.strip()
-    else:
-        # 備用: 網頁標題
-        page_title = soup.find("title")
-        if page_title:
-            title = page_title.text.split("- PChome")[0].strip()
+    # 補抓標題
+    if title == "PChome商品":
+        name_tag = soup.find(id="NickName")
+        if name_tag: title = name_tag.text.strip()
+        else:
+            page_title = soup.find("title")
+            if page_title: title = page_title.text.split("- PChome")[0].strip()
 
     return price, title
 
 def get_product_info(url):
     print(f"🔍 正在解析: {url}...")
     
-    # 辨識平台
     platform = "unknown"
     if "momoshop.com.tw" in url:
         platform = "momo"
@@ -105,22 +155,19 @@ def get_product_info(url):
     elif "pchome.com.tw" in url:
         platform = "pchome"
         print("💡 識別為: PChome 24h")
-    else:
-        print("⚠️ 未知平台，將嘗試通用解析...")
 
     chrome_options = Options()
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    # 偽裝成一般瀏覽器
-    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36")
+    # 隨機 User Agent 避免被擋
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
 
     driver = webdriver.Chrome(options=chrome_options)
     
     try:
         driver.get(url)
-        # PChome 有時候載入比較慢，給它一點時間
-        time.sleep(5) 
+        time.sleep(5) # 等待 PChome 的 JS 跑完
         
         soup = BeautifulSoup(driver.page_source, 'html.parser')
         
@@ -129,7 +176,6 @@ def get_product_info(url):
         elif platform == "pchome":
             return parse_pchome(soup)
         else:
-            # 預設嘗試 Momo (或是可以擴充其他平台)
             return parse_momo(soup)
 
     except Exception as e:
@@ -138,7 +184,7 @@ def get_product_info(url):
     finally:
         driver.quit()
 
-# --- 3. 核心功能: 資料庫操作 ---
+# --- 4. 資料庫儲存 ---
 
 def save_price_record(user_id, url, price, title):
     if not supabase:
@@ -148,7 +194,6 @@ def save_price_record(user_id, url, price, title):
     print(f"💾 正在儲存: {title} | ${price}")
     
     try:
-        # 準備寫入資料
         product_data = {
             "user_id": user_id,
             "original_url": url,
@@ -158,21 +203,17 @@ def save_price_record(user_id, url, price, title):
             "updated_at": "now()"
         }
         
-        # 檢查是否存在
         existing = supabase.table("products").select("id").eq("original_url", url).eq("user_id", user_id).execute()
         
         product_id = None
         if existing.data:
-            # 更新現有商品
             product_id = existing.data[0]['id']
             supabase.table("products").update(product_data).eq("id", product_id).execute()
         else:
-            # 新增商品
             result = supabase.table("products").insert(product_data).execute()
             if result.data:
                 product_id = result.data[0]['id']
 
-        # 寫入歷史價格
         if product_id:
             history_data = {
                 "product_id": product_id,
@@ -185,14 +226,12 @@ def save_price_record(user_id, url, price, title):
     except Exception as e:
         print(f"❌ 資料庫寫入失敗: {e}")
 
-# --- 主程式進入點 ---
-
 if __name__ == "__main__":
     if len(sys.argv) > 2:
         target_url = sys.argv[1]
         user_id = sys.argv[2]
         
-        print("🚀 啟動 V10.5 全能版...")
+        print("🚀 啟動 V10.6 結構化數據版...")
         
         current_price, product_title = get_product_info(target_url)
         
@@ -200,6 +239,6 @@ if __name__ == "__main__":
             print(f"💰 成功抓取價格: {current_price}")
             save_price_record(user_id, target_url, current_price, product_title)
         else:
-            print(f"❌ 解析失敗: 無法抓取價格，請確認網址或網站結構是否變更。")
+            print(f"❌ 解析失敗: PChome 結構變更，請檢查 JSON-LD 格式。")
     else:
-        print("❌ 參數不足: 請提供 URL 和 User_ID")
+        print("❌ 參數不足")
