@@ -8,10 +8,12 @@ jobs:
   build:
     runs-on: ubuntu-latest
     
-    # ★★★ 改動這裡：把 env 搬到這裡來 (Job 層級)，這樣全域都吃得到 ★★★
+    # ★★★ 修改重點 1：環境變數名稱 ★★★
+    # Python 程式裡寫的是 os.environ.get("SUPABASE_KEY")
+    # 所以這裡左邊的名稱必須是 SUPABASE_KEY，不能是 SUPABASE_SERVICE_ROLE_KEY
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
 
     steps:
       - uses: actions/checkout@v3
@@ -25,5 +27,7 @@ jobs:
         run: pip install requests supabase
 
       - name: Run parser
-        # 這裡就不需要再寫 env 了，因為上面已經宣告過了
-        run: python ig_map/main.py "${{ github.event.client_payload.url }}" "${{ github.event.client_payload.user_id }}"
+        # ★★★ 修改重點 2：參數變更 ★★★
+        # Make 那邊我們改傳 "raw_message" (原始訊息) 了，所以這裡也要跟著改
+        # 原本是 url，現在要改成 raw_message
+        run: python ig_map/main.py "${{ github.event.client_payload.raw_message }}" "${{ github.event.client_payload.user_id }}"
