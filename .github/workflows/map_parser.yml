@@ -8,11 +8,11 @@ jobs:
   build:
     runs-on: ubuntu-latest
     
-    # ★★★ 這裡是最關鍵的修正 ★★★
-    # 左邊：Python 程式碼裡要讀取的變數名稱 (必須是 SUPABASE_KEY)
-    # 右邊：您 GitHub 後台實際儲存的密鑰名稱 (根據截圖是 SUPABASE_SERVICE_ROLE_KEY)
+    #設定環境變數 (對應您的 GitHub Secrets)
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      # 左邊是 Python 要讀的名字 (SUPABASE_KEY)
+      # 右邊是您後台設定的名字 (SUPABASE_SERVICE_ROLE_KEY)
       SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
 
     steps:
@@ -27,5 +27,6 @@ jobs:
         run: pip install requests supabase
 
       - name: Run parser
-        # 這裡接收從 Make 傳過來的 "raw_message"
+        # ★★★ 關鍵修改：只有當 raw_message 不為空時，才執行這一步 ★★★
+        if: ${{ github.event.client_payload.raw_message != '' }}
         run: python ig_map/main.py "${{ github.event.client_payload.raw_message }}" "${{ github.event.client_payload.user_id }}"
