@@ -13,7 +13,7 @@ jobs:
     # 所以這裡左邊的名稱必須是 SUPABASE_KEY，不能是 SUPABASE_SERVICE_ROLE_KEY
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}: ${{ secrets.SUPABASE_KEY }}
 
     steps:
       - uses: actions/checkout@v3
