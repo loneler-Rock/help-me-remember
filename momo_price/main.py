@@ -82,13 +82,10 @@ def clean_price_text(text):
 
 def extract_price_from_user_text(text):
     if not text: return None
-    # 文字保底機制：改為抓取第一個合理的價格
     matches = re.finditer(r'(?:【|\$|)(\d+(?:,\d+)*)(?:元|)', text)
     for m in matches:
         p = clean_price_text(m.group(1))
-        # 這裡門檻設為 100，避免抓到 "1入" 或 "2024" 年份(雖然年份通常很大，但如果切分錯誤)
         if p and p > 100 and p < 1000000:
-             # 在文字描述中，通常第一個出現的金額就是重點
              return p
     return None
 
@@ -105,53 +102,36 @@ def extract_json_ld(soup, platform):
         except: continue
     return None
 
-# --- 3. 解析邏輯 (V10.19 核心升級: 位置優先法) ---
+# --- 3. 解析邏輯 ---
 
 def parse_momo(soup):
     title = "Momo商品"
-    
-    # 標題
     og_title = soup.find("meta", property="og:title")
     title = og_title["content"] if og_title else (soup.title.text.split("- momo")[0].strip() if soup.title else title)
 
-    # === 策略 A: 嚴格 CSS 順序掃描 (Level 1) ===
-    # 這是依照 Momo 網頁結構，「主價格」最常出現的 CSS 順序
-    # 我們抓到第一個符合條件的就立刻 return，不往後找
-    
     priority_selectors = [
-        "ul.price li.special span.price",   # [活動頁] 最標準的特價紅字
-        ".priceArea .price",                # [標準頁] 新版價格區
-        ".goodsPrice .price",               # [TP頁] 常見結構
-        "li.special span.price",            # [通用] 特價
-        ".d-price .price",                  # [TP頁] 另一種結構
-        ".product_price .price",            # [舊版]
-        "b.price",                          # [通用] 強調價格
-        ".seoPrice"                         # [隱藏] 搜尋引擎用價格
+        "ul.price li.special span.price",
+        ".priceArea .price",
+        ".goodsPrice .price",
+        "li.special span.price",
+        ".d-price .price",
+        ".product_price .price",
+        "b.price",
+        ".seoPrice"
     ]
 
     for sel in priority_selectors:
-        # 使用 select (會依照 HTML 出現順序回傳)
         tags = soup.select(sel)
         for tag in tags:
-            # 排除被劃掉的 (del)
             if tag.find_parent("del") or "strike" in tag.get("class", []):
                 continue
-                
             p = clean_price_text(tag.text)
-            
-            # 過濾器: 排除 < 100 (雜訊/運費) 和 > 20萬 (通常是錯誤或ID)
-            # 3680 會通過，202 會通過，但因為我們是「位置優先」，
-            # 3680 在 HTML 裡通常比 202 (回饋金) 更早出現，所以會先被抓到並 return
             if p and p > 100 and p < 200000:
-                # print(f"🎯 命中 CSS ({sel}): {p}")
                 return p, title
 
-    # === 策略 B: JSON-LD (Level 2) ===
-    # 如果 CSS 全滅 (例如改版)，才看 JSON
     json_data = extract_json_ld(soup, "momo")
     if json_data:
         if 'name' in json_data and title == "Momo商品": title = json_data['name']
-        
         candidates = []
         if 'offers' in json_data:
             offers = json_data['offers']
@@ -162,31 +142,21 @@ def parse_momo(soup):
                     if 'price' in offer:
                         candidates.append(clean_price_text(offer['price']))
         
-        # JSON-LD 裡通常只有一個價格，如果是多個，選最小的(促銷)
-        # 這裡也要過濾 < 100
         valid_candidates = [c for c in candidates if c and c > 100]
         if valid_candidates:
              return min(valid_candidates), title
 
-    # === 策略 C: 暴力搜尋 (Level 3 - 最後手段) ===
-    # 掃描 HTML 所有含 "price" class 的元素
-    # 依然採用「第一個出現」原則
     price_tags = soup.select("[class*='price']")
     for tag in price_tags:
-        # 排除刪除線
         if tag.find_parent("del"): continue
-        
         p = clean_price_text(tag.text)
         if p and p > 100 and p < 200000:
-            # print(f"🎯 命中暴力搜尋: {p}")
             return p, title
 
     return None, title
 
 def parse_pchome(soup):
     price, title = None, "PChome商品"
-    
-    # PChome 優先策略
     selectors = ["#PriceTotal", ".o-prodPrice__price", ".price-info__price"]
     for sel in selectors:
         tag = soup.select_one(sel)
@@ -194,7 +164,6 @@ def parse_pchome(soup):
             p = clean_price_text(tag.text)
             if p and p > 10: return p, title
 
-    # JSON-LD
     json_data = extract_json_ld(soup, "pchome")
     if json_data:
         if 'name' in json_data: title = json_data['name']
@@ -275,7 +244,10 @@ def save_price_record(user_id, raw_input, price, title, url):
         
         if existing.data:
             pid = existing.data[0]['id']
-            # V10.19: 確保每次都更新
+            # 當使用者再次手動新增時，如果該商品原本是 inactive，要重新 activate
+            if not existing.data[0]['is_active']:
+                 product_data['is_active'] = True
+            
             supabase.table("products").update(product_data).eq("id", pid).execute()
         else:
             res = supabase.table("products").insert(product_data).execute()
@@ -334,7 +306,14 @@ def check_all_products():
                     diff = old_price - new_price
                     print(f"🎉 降價了！ 便宜了 ${diff} ({old_price} -> {new_price})")
         else:
-            print("⚠️ 無法抓取價格，跳過")
+            # ★ V10.20 新增：自動淘汰機制
+            print("⚠️ 無法抓取價格 (可能已下架)")
+            try:
+                # 只有在「確定找不到價格」時，才將其標記為 inactive
+                supabase.table("products").update({"is_active": False}).eq("id", pid).execute()
+                print("📉 已自動將此商品標記為「停用」，下次不再檢查")
+            except Exception as e:
+                print(f"❌ 更新狀態失敗: {e}")
         
         time.sleep(5)
 
@@ -342,7 +321,7 @@ if __name__ == "__main__":
     if len(sys.argv) > 2:
         raw_msg = sys.argv[1]
         uid = sys.argv[2]
-        print("🚀 V10.19 位置優先法版啟動...")
+        print("🚀 V10.20 自動淘汰機制版啟動...")
         price, title, clean_url = get_product_info(raw_msg)
         if price:
             save_price_record(uid, raw_msg, price, title, clean_url)
