@@ -82,19 +82,18 @@ def clean_price_text(text):
 
 def extract_price_from_user_text(text):
     if not text: return None
-    # 從文字提取時，我們仍然可以用「最大值策略」
-    # 因為使用者分享的文字比較乾淨，不太會有銀行促銷資訊
+    # 從文字提取時，嘗試找最低的合理價格 (通常文字裡也會有定價和特價)
     candidates = []
     patterns = [r'【(\d+(?:,\d+)*)元', r'\$(\d+(?:,\d+)*)', r'(\d+(?:,\d+)*)元']
     for p in patterns:
         matches = re.finditer(p, text)
         for m in matches:
             val = clean_price_text(m.group(1))
-            if val and val > 10: 
+            if val and val > 100: 
                 candidates.append(val)
     
     if candidates:
-        return max(candidates)
+        return min(candidates) # 假設文字裡有 "原價3980 特價3680"，我們取 3680
     return None
 
 def extract_json_ld(soup, platform):
@@ -110,84 +109,115 @@ def extract_json_ld(soup, platform):
         except: continue
     return None
 
-# --- 3. 解析邏輯 (V10.17 核心升級: 信任分級制) ---
+# --- 3. 解析邏輯 (V10.18 核心升級: 促銷價狙擊手) ---
 
 def parse_momo(soup):
     title = "Momo商品"
     
-    # === Level 1: JSON-LD (最高信任度) ===
-    # 只要這裡有抓到，我們就相信它，直接回傳，不看後面！
-    json_data = extract_json_ld(soup, "momo")
-    if json_data:
-        if 'name' in json_data: title = json_data['name']
-        
-        if 'offers' in json_data:
-            # 有些結構是 offers: { price: ... }
-            if isinstance(json_data['offers'], dict) and 'price' in json_data['offers']:
-                p = clean_price_text(json_data['offers']['price'])
-                if p and p > 10: 
-                    # print(f"🎯 命中 JSON-LD 價格: {p}")
-                    return p, title
-            
-            # 有些是 offers: [ { price: ... } ]
-            elif isinstance(json_data['offers'], list):
-                for offer in json_data['offers']:
-                    if 'price' in offer:
-                        p = clean_price_text(offer['price'])
-                        if p and p > 10:
-                            # print(f"🎯 命中 JSON-LD 價格 (List): {p}")
-                            return p, title
+    # 標題
+    og_title = soup.find("meta", property="og:title")
+    title = og_title["content"] if og_title else (soup.title.text.split("- momo")[0].strip() if soup.title else title)
 
-    # 標題 fallback
-    if title == "Momo商品":
-        og_title = soup.find("meta", property="og:title")
-        title = og_title["content"] if og_title else (soup.title.text.split("- momo")[0].strip() if soup.title else title)
-
-    # === Level 2: 標準視覺標籤 (中等信任度) ===
-    # 按照順序找，找到第一個「合理」的就回傳
-    # 通常頁面最上面的價格就是主商品價格
-    selectors = [
-        "span.price",            # 最常見
-        "span.seoPrice",         # 常見
-        ".product_price b",      # 舊版頁面
-        ".special .price",       # 特價區
-        ".goodsPrice .price",    # 活動頁
-        ".d-price .price",       # 活動頁
-        "dd.price b"             # 列表頁
-    ]
+    # === 策略 A: 視覺 CSS 促銷區塊 (Level 1 - 最優先) ===
+    # 我們不再只看 span.price，我們要看它是不是在 "special" (促銷) 區塊裡
+    # 這是 Momo 最典型的特價結構: <li class="special"> <span>促銷價</span> <span class="price">3,680</span> </li>
     
-    for sel in selectors:
-        tags = soup.select(sel)
-        for tag in tags:
+    promo_selectors = [
+        "ul.price li.special span.price",  # 標準特價區
+        ".priceArea .price",               # 新版特價區
+        ".product_price .price",           # 另一種結構
+        "b.price"                          # 強調的價格
+    ]
+
+    for sel in promo_selectors:
+        tag = soup.select_one(sel)
+        if tag:
             p = clean_price_text(tag.text)
-            # 這裡我們設定 > 100，避免抓到 67 元那種怪怪的數字
-            if p and p > 100:
-                # print(f"🎯 命中 CSS 標籤 ({sel}): {p}")
+            # 這裡我們稍微放寬下限，但嚴格過濾上限 (太大的可能是紅利點數)
+            if p and p > 50 and p < 200000:
+                # print(f"🎯 命中促銷區塊 ({sel}): {p}")
                 return p, title
 
-    # === Level 3: 暴力搜尋 (最低信任度) ===
-    # 只有前面都失敗了，才允許用正則去掃 HTML
-    # 這裡我們也要很小心，只抓 class="price" 附近的數字
+    # === 策略 B: JSON-LD (Level 2 - 次要) ===
+    # 如果網頁上找不到特價 CSS，才回頭看 JSON-LD
+    # 但這裡要小心，JSON-LD 可能是原價
+    json_data = extract_json_ld(soup, "momo")
+    if json_data:
+        if 'name' in json_data and title == "Momo商品": title = json_data['name']
+        
+        json_price = None
+        if 'offers' in json_data:
+            offers = json_data['offers']
+            if isinstance(offers, dict) and 'price' in offers:
+                json_price = clean_price_text(offers['price'])
+            elif isinstance(offers, list):
+                # 如果有多個 offer (例如有低價和高價)，選最低的！
+                prices = []
+                for offer in offers:
+                    if 'price' in offer:
+                        v = clean_price_text(offer['price'])
+                        if v: prices.append(v)
+                if prices:
+                    json_price = min(prices)
+        
+        if json_price and json_price > 50:
+             # print(f"🎯 命中 JSON-LD: {json_price}")
+             return json_price, title
+
+    # === 策略 C: 廣泛搜尋 (Level 3 - 保底) ===
+    # 如果上面都沒抓到，掃描所有可能是價格的地方，然後取 "最小值" (但要大於100)
+    # 原理：如果有 "3980" 和 "3680" 同時出現，我們想要 3680
+    candidates = []
+    
+    # 收集所有 class="price"
+    price_tags = soup.select(".price, .seoPrice")
+    for tag in price_tags:
+        # 排除被劃掉的價格 (原價)
+        if "strike" in tag.get("class", []) or tag.find_parent("del"):
+            continue
+            
+        p = clean_price_text(tag.text)
+        if p and p > 100:
+            candidates.append(p)
+            
+    # 收集 HTML 裡面的數字
     html_str = str(soup)
     matches = re.findall(r'price[^>]*>.*?(\d{1,3}(?:,\d{3})*)', html_str)
-    
-    # 這裡如果有多個，我們不選最大的 (怕選到 15000)
-    # 我們選第一個出現的 (因為價格通常在上面)
     for m in matches:
         p = clean_price_text(m)
         if p and p > 100:
-            # print(f"🎯 命中暴力搜尋: {p}")
-            return p, title
+            candidates.append(p)
+            
+    if candidates:
+        # 過濾掉太大的 (避免 15000 滿額贈)
+        # 假設一般商品不會超過 50萬 (除非你真的是賣車)
+        valid_candidates = [c for c in candidates if c < 500000]
+        
+        if valid_candidates:
+            # ★ 關鍵改變：取最小值！ (Assume Lowest Price is the Promo Price)
+            # 在排除掉 < 100 的雜訊後，最小的通常是促銷價
+            best_price = min(valid_candidates)
+            # print(f"🎯 命中候選價格最小值: {best_price}")
+            return best_price, title
 
     return None, title
 
 def parse_pchome(soup):
     price, title = None, "PChome商品"
-    # PChome 也採用優先回傳機制
+    # PChome 邏輯: 優先找 "目前售價" 區塊
     
-    # 1. JSON-LD
+    # 1. 視覺區塊 (PChome 的價格 ID 很明確)
+    selectors = ["#PriceTotal", ".o-prodPrice__price", ".price-info__price"]
+    for sel in selectors:
+        tag = soup.select_one(sel)
+        if tag:
+            p = clean_price_text(tag.text)
+            if p and p > 10: return p, title
+
+    # 2. JSON-LD
     json_data = extract_json_ld(soup, "pchome")
     if json_data:
+        if 'name' in json_data: title = json_data['name']
         if 'offers' in json_data:
             offers = json_data['offers']
             raw_p = None
@@ -195,25 +225,8 @@ def parse_pchome(soup):
             elif isinstance(offers, list) and offers and 'price' in offers[0]: raw_p = offers[0]['price']
             
             p = clean_price_text(raw_p)
-            if p and p > 10: return p, (json_data['name'] if 'name' in json_data else title)
-
-    # 2. Meta
-    meta = soup.find("meta", property="product:price:amount") or soup.find("meta", property="og:price:amount")
-    if meta:
-        p = clean_price_text(meta["content"])
-        if p and p > 10: return p, title
-
-    # 3. Visual
-    for sel in ["#PriceTotal", ".o-prodPrice__price", ".price-info__price", "span[id^='PriceTotal']"]:
-        tag = soup.select_one(sel)
-        if tag: 
-            p = clean_price_text(tag.text)
             if p and p > 10: return p, title
 
-    if title == "PChome商品":
-        name_tag = soup.find(id="NickName")
-        title = name_tag.text.strip() if name_tag else (soup.title.text.split("- PChome")[0].strip() if soup.title else title)
-    
     return price, title
 
 # --- 4. 核心功能: 抓取單一商品 ---
@@ -254,7 +267,7 @@ def get_product_info(url_or_base64):
     finally:
         driver.quit()
 
-    # 保底 (僅在單一新增模式下使用)
+    # 保底
     if (not price) and decoded_text and (len(decoded_text) < 1000):
         fallback_price = extract_price_from_user_text(decoded_text)
         if fallback_price:
@@ -283,6 +296,7 @@ def save_price_record(user_id, raw_input, price, title, url):
         
         if existing.data:
             pid = existing.data[0]['id']
+            # V10.18: 每次抓取都更新 current_price，確保是最新
             supabase.table("products").update(product_data).eq("id", pid).execute()
         else:
             res = supabase.table("products").insert(product_data).execute()
@@ -325,10 +339,10 @@ def check_all_products():
         if new_price:
             print(f"💰 最新價格: {new_price}")
             
-            # 邏輯修正：只要價格變動就更新 (漲價也要記，才知道後續降價)
-            if new_price != old_price:
-                # 安全閥：如果價格變動太劇烈 (例如變成 15000)，再檢查一次
-                # 但因為 V10.17 已經改為「JSON-LD優先」，這裡應該很準了，不需要太保守
+            # V10.18: 更嚴格的更新邏輯
+            # 如果抓到的價格比原價低，或不同，我們都更新
+            # 但要避免抓到 0 或 極小值
+            if new_price != old_price and new_price > 50:
                 supabase.table("products").update({
                     "current_price": new_price,
                     "updated_at": "now()"
@@ -352,7 +366,7 @@ if __name__ == "__main__":
     if len(sys.argv) > 2:
         raw_msg = sys.argv[1]
         uid = sys.argv[2]
-        print("🚀 V10.17 信任分級制版啟動...")
+        print("🚀 V10.18 視覺促銷優先版啟動...")
         price, title, clean_url = get_product_info(raw_msg)
         if price:
             save_price_record(uid, raw_msg, price, title, clean_url)
