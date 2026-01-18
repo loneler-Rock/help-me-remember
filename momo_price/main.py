@@ -82,8 +82,6 @@ def clean_price_text(text):
 
 def extract_price_from_user_text(text):
     if not text: return None
-    # 從文字抓取時，也要避開「期」
-    # 這裡先維持簡單邏輯，抓取第一個 > 100 的數字
     matches = re.finditer(r'(?:【|\$|)(\d+(?:,\d+)*)(?:元|)', text)
     for m in matches:
         p = clean_price_text(m.group(1))
@@ -104,32 +102,16 @@ def extract_json_ld(soup, platform):
         except: continue
     return None
 
-# --- 3. 解析邏輯 (V10.21: 語意過濾版) ---
+# --- 3. 解析邏輯 (維持 V10.21 的防分期邏輯) ---
 
 def is_installment(tag):
-    """
-    【V10.21 核心功能】
-    檢查這個價格標籤的「周圍」有沒有出現「期」這個字。
-    如果有，代表它是分期付款金額，必須忽略！
-    """
     if not tag: return False
-    
-    # 檢查自己有沒有含「期」
     if "期" in tag.text: return True
-    
-    # 檢查父層 (Parent) 有沒有含「期」 (例如: <div>每期 <span>$244</span></div>)
     parent = tag.parent
-    if parent and "期" in parent.text:
-        return True
-        
-    # 檢查爺爺層 (Grandparent) (有些結構比較深)
+    if parent and "期" in parent.text: return True
     grandparent = parent.parent if parent else None
     if grandparent and "期" in grandparent.text:
-        # 要小心，不要因為爺爺層有期就殺錯人，但分期金額通常跟「期」靠很近
-        # 如果是分期表 (Table)，通常會有 "installment" class
-        if "install" in str(grandparent.get("class", [])):
-            return True
-            
+        if "install" in str(grandparent.get("class", [])): return True
     return False
 
 def parse_momo(soup):
@@ -137,7 +119,6 @@ def parse_momo(soup):
     og_title = soup.find("meta", property="og:title")
     title = og_title["content"] if og_title else (soup.title.text.split("- momo")[0].strip() if soup.title else title)
 
-    # === 策略 A: 嚴格 CSS 順序掃描 ===
     priority_selectors = [
         "ul.price li.special span.price",
         ".priceArea .price",
@@ -152,26 +133,16 @@ def parse_momo(soup):
     for sel in priority_selectors:
         tags = soup.select(sel)
         for tag in tags:
-            # 1. 排除刪除線
-            if tag.find_parent("del") or "strike" in tag.get("class", []):
-                continue
-            
-            # 2. ★ V10.21: 排除分期付款 (Anti-Installment)
-            if is_installment(tag):
-                # print(f"⚠️ 發現分期金額，跳過: {tag.text}")
-                continue
+            if tag.find_parent("del") or "strike" in tag.get("class", []): continue
+            if is_installment(tag): continue 
 
             p = clean_price_text(tag.text)
-            
-            # 3. 數值範圍過濾
             if p and p > 50 and p < 200000:
                 return p, title
 
-    # === 策略 B: JSON-LD (避開 offers 裡的陷阱) ===
     json_data = extract_json_ld(soup, "momo")
     if json_data:
         if 'name' in json_data and title == "Momo商品": title = json_data['name']
-        
         candidates = []
         if 'offers' in json_data:
             offers = json_data['offers']
@@ -181,28 +152,19 @@ def parse_momo(soup):
                 for offer in offers:
                     if 'price' in offer:
                         candidates.append(clean_price_text(offer['price']))
-        
-        # JSON 裡的價格通常很乾淨，不含分期，所以這裡維持取最小值 (促銷價)
         valid_candidates = [c for c in candidates if c and c > 50]
         if valid_candidates:
              return min(valid_candidates), title
 
-    # === 策略 C: 暴力搜尋 (加強版過濾) ===
     price_tags = soup.select("[class*='price']")
     valid_prices = []
-    
     for tag in price_tags:
         if tag.find_parent("del"): continue
-        if is_installment(tag): continue # 這裡也要檢查分期
-        
+        if is_installment(tag): continue
         p = clean_price_text(tag.text)
         if p and p > 50 and p < 200000:
             valid_prices.append(p)
-    
     if valid_prices:
-        # 如果暴力搜尋找到多個，在排除分期後，選最大的那個
-        # (避免抓到折價券 202 元，但也許會抓到原價，這在暴力模式下是妥協)
-        # 或者我們可以相信出現順序 -> 選第一個
         return valid_prices[0], title
 
     return None, title
@@ -224,7 +186,6 @@ def parse_pchome(soup):
             raw_p = None
             if isinstance(offers, dict) and 'price' in offers: raw_p = offers['price']
             elif isinstance(offers, list) and offers and 'price' in offers[0]: raw_p = offers[0]['price']
-            
             p = clean_price_text(raw_p)
             if p and p > 10: return p, title
 
@@ -292,11 +253,16 @@ def save_price_record(user_id, raw_input, price, title, url):
             "is_active": True,
             "updated_at": "now()"
         }
-        existing = supabase.table("products").select("id").eq("original_url", url).eq("user_id", user_id).execute()
+        
+        # ★ V10.22 修正點：這裡必須 select "id, is_active" 兩個欄位
+        existing = supabase.table("products").select("id, is_active").eq("original_url", url).eq("user_id", user_id).execute()
         
         if existing.data:
             pid = existing.data[0]['id']
-            if not existing.data[0]['is_active']: product_data['is_active'] = True
+            # 現在這裡讀取 is_active 就不會報錯了
+            if not existing.data[0].get('is_active'): 
+                 product_data['is_active'] = True
+            
             supabase.table("products").update(product_data).eq("id", pid).execute()
         else:
             res = supabase.table("products").insert(product_data).execute()
@@ -368,7 +334,7 @@ if __name__ == "__main__":
     if len(sys.argv) > 2:
         raw_msg = sys.argv[1]
         uid = sys.argv[2]
-        print("🚀 V10.21 分期付款殺手版啟動...")
+        print("🚀 V10.22 資料庫讀取修正版啟動...")
         price, title, clean_url = get_product_info(raw_msg)
         if price:
             save_price_record(uid, raw_msg, price, title, clean_url)
