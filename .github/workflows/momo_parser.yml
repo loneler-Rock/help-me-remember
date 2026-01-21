@@ -1,16 +1,15 @@
-name: Momo Price Tracker
+name: Shopping Price Tracker
 
 on:
-  # 1. LINE 觸發 (原本的功能)
+  # 1. LINE 觸發 (只聽 momo_task)
   repository_dispatch:
     types: [momo_task]
   
-  # 2. 定時觸發 (新增功能: 每天台灣時間早上 08:00)
-  # UTC 時間 00:00 = 台灣時間 08:00
+  # 2. 每日排程 (只在購物這變跑)
   schedule:
     - cron: '0 0 * * *'
     
-  # 3. 手動觸發 (新增功能: 方便你在 GitHub 網頁上按按鈕測試)
+  # 3. 手動按鈕
   workflow_dispatch:
 
 jobs:
@@ -25,27 +24,23 @@ jobs:
         with:
           python-version: '3.9'
           
-      # 保留你原本的 Chrome 設定，這很重要
+      # 購物爬蟲需要 Chrome (Selenium)
       - name: Setup Chrome
         uses: browser-actions/setup-chrome@latest
           
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run Momo Parser
+      - name: Run Shopping Parser
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
-          # ★★★ 關鍵修改：智慧判斷觸發來源 ★★★
-          
+          # 判斷是 LINE 傳來的，還是排程自動跑的
           if [ "${{ github.event_name }}" == "repository_dispatch" ]; then
-            echo "🚀 觸發模式: LINE 新增商品"
-            # 如果是 LINE 來的，就把網址和 UserID 傳進去
+            echo "🛒 [新增模式] 收到 LINE 購物連結..."
             python momo_price/main.py "${{ github.event.client_payload.url }}" "${{ github.event.client_payload.user_id }}"
-          
           else
-            echo "⏰ 觸發模式: 全庫掃描 (排程/手動)"
-            # 如果是排程或手動，不傳參數，讓 Python 跑 check_all_products()
+            echo "⏰ [掃描模式] 執行每日比價..."
             python momo_price/main.py
           fi
