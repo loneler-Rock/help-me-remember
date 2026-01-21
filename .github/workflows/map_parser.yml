@@ -1,20 +1,17 @@
-name: Map Parser
+name: Map Saver
 
 on:
+  # 只聽 map_task
   repository_dispatch:
     types: [map_task]
+
+  # 手動測試用
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
     
-    #設定環境變數 (對應您的 GitHub Secrets)
-    env:
-      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-      # 左邊是 Python 要讀的名字 (SUPABASE_KEY)
-      # 右邊是您後台設定的名字 (SUPABASE_SERVICE_ROLE_KEY)
-      SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-
     steps:
       - uses: actions/checkout@v3
       
@@ -23,10 +20,17 @@ jobs:
         with:
           python-version: '3.9'
           
+      # ★ 地圖功能不需要 Setup Chrome，這裡直接省掉，速度會快很多！
+          
       - name: Install dependencies
-        run: pip install requests supabase
+        # 地圖只需要 supabase 和 requests，這裡雖然裝全部但沒關係
+        run: pip install -r requirements.txt
 
-      - name: Run parser
-        # ★★★ 關鍵修改：只有當 raw_message 不為空時，才執行這一步 ★★★
-        if: ${{ github.event.client_payload.raw_message != '' }}
-        run: python ig_map/main.py "${{ github.event.client_payload.raw_message }}" "${{ github.event.client_payload.user_id }}"
+      - name: Run Map Saver
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          echo "🗺️ [地圖模式] 正在收藏地點..."
+          # 呼叫 map_main.py (記得確認你的檔案路徑名稱)
+          python momo_price/map_main.py "${{ github.event.client_payload.url }}" "${{ github.event.client_payload.user_id }}"
