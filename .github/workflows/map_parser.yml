@@ -1,11 +1,8 @@
 name: Map Saver
 
 on:
-  # 只聽 map_task
   repository_dispatch:
     types: [map_task]
-
-  # 手動測試用
   workflow_dispatch:
 
 jobs:
@@ -20,10 +17,7 @@ jobs:
         with:
           python-version: '3.9'
           
-      # ★ 地圖功能不需要 Setup Chrome，這裡直接省掉，速度會快很多！
-          
       - name: Install dependencies
-        # 地圖只需要 supabase 和 requests，這裡雖然裝全部但沒關係
         run: pip install -r requirements.txt
 
       - name: Run Map Saver
@@ -32,5 +26,5 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
           echo "🗺️ [地圖模式] 正在收藏地點..."
-          # 呼叫 map_main.py (記得確認你的檔案路徑名稱)
-          python momo_price/map_main.py "${{ github.event.client_payload.url }}" "${{ github.event.client_payload.user_id }}"
+          # ★★★ 修正點：資料夾名稱改成 ig_map ★★★
+          python ig_map/map_main.py "${{ github.event.client_payload.url }}" "${{ github.event.client_payload.user_id }}"
