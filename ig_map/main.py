@@ -41,7 +41,6 @@ def reply_line(token, messages):
         print(f"❌ LINE 回覆失敗: {e}")
 
 # --- 2. 工具函式 ---
-
 def calculate_distance(lat1, lon1, lat2, lon2):
     if lat2 is None or lon2 is None: return 99999
     R = 6371
@@ -88,7 +87,6 @@ def determine_category(title):
     return "其它"
 
 # --- 3. 核心功能 A: 存檔模式 ---
-
 def handle_save_task(raw_message, user_id, reply_token):
     print(f"📥 [存檔模式] 處理中...")
     
@@ -97,7 +95,6 @@ def handle_save_task(raw_message, user_id, reply_token):
 
     target_url = extract_map_url(raw_message)
     temp_title = raw_message[:30].replace("\n", " ") if raw_message else "未命名地點"
-
     message_to_user = ""
 
     if target_url:
@@ -106,10 +103,11 @@ def handle_save_task(raw_message, user_id, reply_token):
         category = determine_category(temp_title)
 
         if lat and lng:
+            # ★★★ 修正點：對應 map_spots 的欄位 ★★★
             data = {
                 "user_id": user_id,
-                "title": temp_title,
-                "url": final_url,
+                "location_name": temp_title, # 對應你的 DB
+                "google_map_url": final_url, # 對應你的 DB
                 "address": final_url,
                 "latitude": lat,
                 "longitude": lng,
@@ -118,16 +116,15 @@ def handle_save_task(raw_message, user_id, reply_token):
                 "created_at": "now()"
             }
             try:
-                # [修正] 表名改為 map_spots
                 supabase.table("map_spots").insert(data).execute()
                 print(f"✅ 成功儲存: {temp_title}")
                 message_to_user = f"✅ 已收藏地點！\n類別: {category}\n標題: {temp_title}"
             except Exception as e:
                 print(f"❌ DB Error: {e}")
-                message_to_user = "❌ 系統錯誤，儲存失敗 (可能是欄位對應問題)。"
+                message_to_user = "❌ 系統錯誤，儲存失敗 (欄位對應錯誤)。"
         else:
             backup_save(user_id, temp_title, raw_message, target_url)
-            message_to_user = "⚠️ 連結已存入，但抓不到座標 (系統將稍後處理)。"
+            message_to_user = "⚠️ 連結已存入，但抓不到座標。"
     else:
         pass
 
@@ -137,8 +134,8 @@ def handle_save_task(raw_message, user_id, reply_token):
 def backup_save(user_id, title, content, url):
     data = {
         "user_id": user_id,
-        "title": "[待處理] " + title,
-        "url": url,
+        "location_name": "[待處理] " + title,
+        "google_map_url": url,
         "address": content,
         "latitude": 0,
         "longitude": 0,
@@ -146,18 +143,15 @@ def backup_save(user_id, title, content, url):
         "created_at": "now()"
     }
     try:
-        # [修正] 表名改為 map_spots
         supabase.table("map_spots").insert(data).execute()
     except Exception as e:
         print(f"❌ 待處理寫入失敗: {e}")
 
 # --- 4. 核心功能 B: 雷達模式 ---
-
 def handle_radar_task(user_lat, user_lng, user_id, reply_token):
     print(f"📡 [雷達模式] 搜尋附近: {user_lat}, {user_lng}")
 
     try:
-        # [修正] 表名改為 map_spots
         response = supabase.table("map_spots").select("*").neq("latitude", 0).execute()
         spots = response.data
 
@@ -175,7 +169,9 @@ def handle_radar_task(user_lat, user_lng, user_id, reply_token):
         for spot in nearby_spots:
             dist_text = f"{spot['distance_km']:.1f} km"
             nav_url = f"https://www.google.com/maps/search/?api=1&query={spot['latitude']},{spot['longitude']}"
-            cat_color = "#E63946" if spot['category'] == "美食" else ("#457B9D" if spot['category'] == "景點" else "#1D8446")
+            # 注意：這裡如果是 None 要處理，避免報錯
+            cat_val = spot.get('category') or "其它"
+            cat_color = "#E63946" if cat_val == "美食" else ("#457B9D" if cat_val == "景點" else "#1D8446")
 
             bubble = {
                 "type": "bubble",
@@ -184,8 +180,8 @@ def handle_radar_task(user_lat, user_lng, user_id, reply_token):
                     "type": "box",
                     "layout": "vertical",
                     "contents": [
-                        {"type": "text", "text": spot['category'], "weight": "bold", "color": cat_color, "size": "xxs"},
-                        {"type": "text", "text": spot['title'], "weight": "bold", "size": "sm", "wrap": True, "margin": "xs"},
+                        {"type": "text", "text": cat_val, "weight": "bold", "color": cat_color, "size": "xxs"},
+                        {"type": "text", "text": spot['location_name'], "weight": "bold", "size": "sm", "wrap": True, "margin": "xs"},
                         {"type": "text", "text": dist_text, "size": "xs", "color": "#aaaaaa", "margin": "xs"}
                     ]
                 },
@@ -215,7 +211,6 @@ def handle_radar_task(user_lat, user_lng, user_id, reply_token):
         reply_line(reply_token, [{"type": "text", "text": "❌ 系統忙碌中 (Radar Error)"}])
 
 # --- 主程式進入點 ---
-
 if __name__ == "__main__":
     if len(sys.argv) > 3:
         arg1 = sys.argv[1] # raw_message
