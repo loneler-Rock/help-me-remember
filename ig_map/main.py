@@ -9,7 +9,6 @@ from supabase import create_client, Client
 # --- 1. 初始化設定 ---
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
-# [新增] 讀取 LINE Token，讓 Python 可以回話
 LINE_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
 
 try:
@@ -20,13 +19,8 @@ except Exception as e:
     print(f"❌ Supabase 初始化失敗: {e}")
     sys.exit(1)
 
-# --- [新增] LINE 回覆工具 ---
+# --- LINE 回覆工具 ---
 def reply_line(token, messages):
-    """
-    發送訊息回 LINE
-    token: Reply Token
-    messages: 訊息物件列表 (List of dict)
-    """
     if not token:
         print("⚠️ 沒有 Reply Token，無法回覆 LINE")
         return
@@ -124,22 +118,19 @@ def handle_save_task(raw_message, user_id, reply_token):
                 "created_at": "now()"
             }
             try:
-                supabase.table("ig_food_map").insert(data).execute()
+                # [修正] 表名改為 map_spots
+                supabase.table("map_spots").insert(data).execute()
                 print(f"✅ 成功儲存: {temp_title}")
-                # [修改] 改為發送 LINE
                 message_to_user = f"✅ 已收藏地點！\n類別: {category}\n標題: {temp_title}"
             except Exception as e:
                 print(f"❌ DB Error: {e}")
-                message_to_user = "❌ 系統錯誤，儲存失敗。"
+                message_to_user = "❌ 系統錯誤，儲存失敗 (可能是欄位對應問題)。"
         else:
             backup_save(user_id, temp_title, raw_message, target_url)
             message_to_user = "⚠️ 連結已存入，但抓不到座標 (系統將稍後處理)。"
     else:
-        # 純文字不回應，避免太吵，或者你可以開啟下面這行
-        # message_to_user = "這不是地圖連結喔。"
         pass
 
-    # 執行回覆
     if message_to_user:
         reply_line(reply_token, [{"type": "text", "text": message_to_user}])
 
@@ -155,7 +146,8 @@ def backup_save(user_id, title, content, url):
         "created_at": "now()"
     }
     try:
-        supabase.table("ig_food_map").insert(data).execute()
+        # [修正] 表名改為 map_spots
+        supabase.table("map_spots").insert(data).execute()
     except Exception as e:
         print(f"❌ 待處理寫入失敗: {e}")
 
@@ -165,7 +157,8 @@ def handle_radar_task(user_lat, user_lng, user_id, reply_token):
     print(f"📡 [雷達模式] 搜尋附近: {user_lat}, {user_lng}")
 
     try:
-        response = supabase.table("ig_food_map").select("*").neq("latitude", 0).execute()
+        # [修正] 表名改為 map_spots
+        response = supabase.table("map_spots").select("*").neq("latitude", 0).execute()
         spots = response.data
 
         for spot in spots:
@@ -215,7 +208,6 @@ def handle_radar_task(user_lat, user_lng, user_id, reply_token):
             }
         }
         
-        # [修改] 直接回傳 Flex Message
         reply_line(reply_token, [flex_message])
 
     except Exception as e:
@@ -225,13 +217,11 @@ def handle_radar_task(user_lat, user_lng, user_id, reply_token):
 # --- 主程式進入點 ---
 
 if __name__ == "__main__":
-    # 接收參數: script.py "訊息" "User_ID" "Reply_Token"
     if len(sys.argv) > 3:
         arg1 = sys.argv[1] # raw_message
         arg2 = sys.argv[2] # user_id
         arg3 = sys.argv[3] # reply_token
 
-        # 判斷是否為座標 (雷達模式)
         if re.match(r'^-?\d+(\.\d+)?,-?\d+(\.\d+)?$', arg1):
             try:
                 lat_str, lng_str = arg1.split(',')
@@ -239,7 +229,6 @@ if __name__ == "__main__":
             except:
                 handle_save_task(arg1, arg2, arg3)
         else:
-            # 存檔模式
             handle_save_task(arg1, arg2, arg3)
     else:
         print("❌ 參數不足: 需 message, user_id, reply_token")
