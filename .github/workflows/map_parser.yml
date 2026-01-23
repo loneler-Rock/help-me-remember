@@ -2,7 +2,8 @@ name: Map Saver
 
 on:
   repository_dispatch:
-    types: [map_task]
+    # [修正1] 對應 Make 設定的 event_type "save_map"
+    types: [save_map]
   workflow_dispatch:
 
 jobs:
@@ -24,7 +25,14 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          # [修正2] 加入 LINE Token，這樣 Python 才能回覆訊息 (如果你的腳本有寫回覆功能的話)
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
         run: |
-          echo "🗺️ [地圖模式] 正在收藏地點..."
-          # ★★★ 修正點：資料夾名稱改成 ig_map ★★★
-          python ig_map/map_main.py "${{ github.event.client_payload.url }}" "${{ github.event.client_payload.user_id }}"
+          echo "🗺️ [地圖模式] 收到 Make 指令，正在啟動..."
+          
+          # [修正3] 參數對接修正：
+          # 原本是 client_payload.url -> 改為 client_payload.message_text (因為 Make 傳過來的是整段文字)
+          # 原本是 client_payload.user_id -> 保持不變
+          # 這裡我們傳入 Make 給的參數，對應你 Python 的 sys.argv[1] 和 sys.argv[2]
+          
+          python ig_map/map_main.py "${{ github.event.client_payload.message_text }}" "${{ github.event.client_payload.user_id }}" "${{ github.event.client_payload.reply_token }}"
