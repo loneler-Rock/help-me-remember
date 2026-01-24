@@ -1,5 +1,2 @@
-supabase
 requests
-beautifulsoup4
-selenium
-webdriver-manager
+supabase
