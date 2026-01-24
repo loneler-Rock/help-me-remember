@@ -1,11 +1,8 @@
 name: Map Saver
 
 on:
-  # 1. 這是給 Make 用的 (自動)
   repository_dispatch:
     types: [save_map]
-  
-  # 2. 這是給人類用的 (手動)
   workflow_dispatch:
     inputs:
       test_url:
@@ -36,20 +33,18 @@ jobs:
         run: |
           echo "🗺️ [地圖核心] 啟動..."
           
-          # --- 智慧參數切換 ---
-          # 如果是 Make 傳來的 (client_payload 有值)，就用 Make 的資料
-          # 如果是手動按的 (inputs 有值)，就用手動輸入的資料
+          # --- 變數名稱修正 (UID -> USER_ID) ---
           
           # 1. 訊息內容 (Message)
           MSG="${{ github.event.client_payload.message_text || github.event.inputs.test_url }}"
           
-          # 2. User ID (手動測試時用 'manual_test_user')
-          UID="${{ github.event.client_payload.user_id || 'manual_test_user' }}"
+          # 2. User ID (修正變數名稱，避免衝突)
+          USER_ID="${{ github.event.client_payload.user_id || 'manual_test_user' }}"
           
-          # 3. Reply Token (手動測試時給空值，這樣 Python 就不會報錯說回覆失敗)
+          # 3. Reply Token
           TOKEN="${{ github.event.client_payload.reply_token || '' }}"
 
           echo "測試模式: 輸入內容 -> $MSG"
           
-          # 執行 Python
-          python ig_map/main.py "$MSG" "$UID" "$TOKEN"
+          # 執行 Python (傳入 USER_ID)
+          python ig_map/main.py "$MSG" "$USER_ID" "$TOKEN"
