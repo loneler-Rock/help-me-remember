@@ -45,7 +45,7 @@ def reply_line(token, messages):
 
 def calculate_distance(lat1, lon1, lat2, lon2):
     if lat2 is None or lon2 is None: return 99999
-    R = 6371 # 地球半徑 (km)
+    R = 6371
     dlat = math.radians(lat2 - lat1)
     dlon = math.radians(lon2 - lon1)
     a = math.sin(dlat/2) * math.sin(dlat/2) + \
@@ -54,51 +54,70 @@ def calculate_distance(lat1, lon1, lat2, lon2):
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
     return R * c
 
-def resolve_url(url):
+def get_url_and_content(url):
     """
-    還原短網址 (強效版 V1.2)
-    改用 GET 請求並開啟 stream=True，能解決 googleusercontent 等頑固縮網址，
-    同時避免下載整個網頁內容以節省時間。
+    V1.3 升級：同時回傳「最終網址」和「網頁 HTML 內容」
     """
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
-        # allow_redirects=True: 自動跟隨跳轉
-        # stream=True: 只讀取連線資訊，不下載網頁 Body，速度快
-        response = requests.get(url, allow_redirects=True, headers=headers, timeout=15, stream=True)
-        return response.url
+        # 取得完整回應
+        response = requests.get(url, allow_redirects=True, headers=headers, timeout=15)
+        return response.url, response.text
     except Exception as e:
-        print(f"⚠️ [DEBUG] 解析短網址失敗: {e}")
-        return url
+        print(f"⚠️ [DEBUG] 網頁請求失敗: {e}")
+        return url, ""
 
 def extract_map_url(text):
     if not text: return None
-    
-    # 廣域捕獲：只要網址裡有 "google" 或 "goo.gl" 都抓進來
+    # 廣域捕獲
     match = re.search(r'(https?://[^\s]*(?:google|goo\.gl)[^\s]*)', text)
-    
     return match.group(1) if match else None
 
-def parse_google_maps_url(url):
+def parse_coordinates(url, html_content=""):
+    """
+    V1.3 核心：雙重解析機制 (先看網址，再看 HTML)
+    """
     if not url: return None, None
-    
-    # 解碼網址 (處理中文亂碼)
     url = unquote(url)
-    
-    # 模式 A: @lat,lng
+
+    # --- 策略 A: 從網址解析 (優先) ---
     match = re.search(r'@(-?\d+\.\d+),(-?\d+\.\d+)', url)
     if match: return float(match.group(1)), float(match.group(2))
     
-    # 模式 B: q=lat,lng
     match = re.search(r'q=(-?\d+\.\d+),(-?\d+\.\d+)', url)
     if match: return float(match.group(1)), float(match.group(2))
     
-    # 模式 C: !3d...!4d
     match_lat = re.search(r'!3d(-?\d+\.\d+)', url)
     match_lng = re.search(r'!4d(-?\d+\.\d+)', url)
     if match_lat and match_lng: return float(match_lat.group(1)), float(match_lng.group(2))
-    
+
+    # --- 策略 B: 從 HTML 內容解析 (針對 googleusercontent) ---
+    if html_content:
+        print("🕵️ [DEBUG] 網址解析失敗，啟動 HTML 深度搜查...")
+        
+        # 搜尋 meta tag 中的 og:image (通常包含 staticmap 連結)
+        # 範例: .../staticmap?center=24.123,121.123&zoom=...
+        if "center=" in html_content:
+            match = re.search(r'center=(-?\d+\.\d+)%2C(-?\d+\.\d+)', html_content) # URL encoded comma
+            if not match:
+                match = re.search(r'center=(-?\d+\.\d+),(-?\d+\.\d+)', html_content) # Normal comma
+            
+            if match:
+                print("🕵️ [DEBUG] 從 HTML meta (center) 找到座標！")
+                return float(match.group(1)), float(match.group(2))
+
+        # 搜尋 markers
+        if "markers=" in html_content:
+            match = re.search(r'markers=(-?\d+\.\d+)%2C(-?\d+\.\d+)', html_content)
+            if not match:
+                match = re.search(r'markers=(-?\d+\.\d+),(-?\d+\.\d+)', html_content)
+            
+            if match:
+                print("🕵️ [DEBUG] 從 HTML meta (markers) 找到座標！")
+                return float(match.group(1)), float(match.group(2))
+                
     return None, None
 
 def determine_category(title):
@@ -122,42 +141,31 @@ def handle_save_task(raw_message, user_id, reply_token):
 
     # 1. 抓取網址
     target_url = extract_map_url(raw_message)
-    
-    # 補漏：如果 Regex 沒抓到，但有關鍵字，直接整句當網址
     if not target_url and "google" in raw_message and "http" in raw_message:
          target_url = raw_message.strip()
 
     print(f"🕵️ [DEBUG] 判定處理網址 -> [{target_url}]")
 
-    # 嘗試提取標題 (從長網址的 /place/ 區段)
-    temp_title = "未命名地點"
-    if target_url and "/place/" in target_url:
-        try:
-            parts = unquote(target_url).split("/place/")[1].split("/")[0]
-            temp_title = parts.replace("+", " ")
-        except:
-            temp_title = raw_message[:30]
-    else:
-        temp_title = raw_message[:30].replace("\n", " ")
-
+    temp_title = raw_message[:30].replace("\n", " ") if raw_message else "未命名地點"
     message_to_user = ""
 
     if target_url:
-        # 3. 強效還原長網址 (這裡會解決 googleusercontent 的問題)
-        final_url = resolve_url(target_url)
+        # 2. 取得網址 與 HTML 內容 (V1.3 關鍵)
+        final_url, html_content = get_url_and_content(target_url)
         print(f"🕵️ [DEBUG] 還原後的長網址 -> [{final_url}]")
+        # print(f"🕵️ [DEBUG] HTML 前100字 -> {html_content[:100]}") # Debug 用
         
-        # 如果還原後的網址裡終於出現了地名，試著更新標題
-        if "/place/" in final_url and temp_title == "未命名地點":
-             try:
+        # 嘗試從網址或 HTML 抓標題
+        if "/place/" in final_url:
+            try:
                 parts = unquote(final_url).split("/place/")[1].split("/")[0]
                 temp_title = parts.replace("+", " ")
-             except:
+            except:
                 pass
-
-        # 4. 解析座標
-        lat, lng = parse_google_maps_url(final_url)
-        print(f"🕵️ [DEBUG] 解析座標結果 -> Lat: {lat}, Lng: {lng}")
+        
+        # 3. 雙重解析座標
+        lat, lng = parse_coordinates(final_url, html_content)
+        print(f"🕵️ [DEBUG] 最終座標結果 -> Lat: {lat}, Lng: {lng}")
         
         category = determine_category(temp_title)
 
@@ -181,12 +189,10 @@ def handle_save_task(raw_message, user_id, reply_token):
                 print(f"❌ 資料庫寫入失敗: {e}")
                 message_to_user = "❌ 系統錯誤，儲存失敗。"
         else:
-            # 有網址但解不出座標
-            print("⚠️ [DEBUG] 有網址但抓不到座標，存入待處理")
+            print("⚠️ [DEBUG] 網址與HTML都找不到座標，存入待處理")
             backup_save(user_id, temp_title, raw_message, target_url)
             message_to_user = "⚠️ 連結已接收，但無法解析座標 (已存入待處理清單)。"
     else:
-        # 完全抓不到網址
         print("⚠️ [DEBUG] 無法識別為地圖連結，存為純文字")
         backup_save(user_id, temp_title, raw_message, "")
         message_to_user = "📝 已存為純文字筆記。"
@@ -195,7 +201,6 @@ def handle_save_task(raw_message, user_id, reply_token):
         reply_line(reply_token, [{"type": "text", "text": message_to_user}])
 
 def backup_save(user_id, title, content, url):
-    """純文字筆記或解析失敗的備份"""
     data = {
         "user_id": user_id,
         "location_name": "[待處理] " + title,
@@ -212,7 +217,7 @@ def backup_save(user_id, title, content, url):
     except Exception as e:
         print(f"❌ 備份寫入失敗: {e}")
 
-# --- 4. 核心功能 B: 雷達模式 ---
+# --- 4. 核心功能 B: 雷達模式 (不變) ---
 
 def handle_radar_task(user_lat, user_lng, user_id, reply_token):
     print(f"📡 [雷達模式] 搜尋附近: {user_lat}, {user_lng}")
@@ -235,18 +240,14 @@ def handle_radar_task(user_lat, user_lng, user_id, reply_token):
         for spot in nearby_spots:
             dist_text = f"{spot['distance_km']:.1f} km"
             nav_url = f"https://www.google.com/maps/search/?api=1&query={spot['latitude']},{spot['longitude']}"
-            
             cat_val = spot.get('category') or "其它"
             title_val = spot.get('location_name') or "未命名"
-            
             cat_color = "#E63946" if cat_val == "美食" else ("#457B9D" if cat_val == "景點" else "#1D8446")
 
             bubble = {
-                "type": "bubble",
-                "size": "micro",
+                "type": "bubble", "size": "micro",
                 "body": {
-                    "type": "box",
-                    "layout": "vertical",
+                    "type": "box", "layout": "vertical",
                     "contents": [
                         {"type": "text", "text": cat_val, "weight": "bold", "color": cat_color, "size": "xxs"},
                         {"type": "text", "text": title_val, "weight": "bold", "size": "sm", "wrap": True, "margin": "xs"},
@@ -254,38 +255,22 @@ def handle_radar_task(user_lat, user_lng, user_id, reply_token):
                     ]
                 },
                 "footer": {
-                    "type": "box",
-                    "layout": "vertical",
-                    "contents": [
-                        {"type": "button", "style": "link", "height": "sm", "action": {"type": "uri", "label": "導航", "uri": nav_url}}
-                    ]
+                    "type": "box", "layout": "vertical",
+                    "contents": [{"type": "button", "style": "link", "height": "sm", "action": {"type": "uri", "label": "導航", "uri": nav_url}}]
                 }
             }
             bubbles.append(bubble)
-
-        flex_message = {
-            "type": "flex",
-            "altText": "這是您附近的地點！",
-            "contents": {
-                "type": "carousel",
-                "contents": bubbles
-            }
-        }
-        
+        flex_message = {"type": "flex", "altText": "附近地點", "contents": {"type": "carousel", "contents": bubbles}}
         reply_line(reply_token, [flex_message])
-
     except Exception as e:
         print(f"❌ 雷達搜尋失敗: {e}")
         reply_line(reply_token, [{"type": "text", "text": "❌ 系統忙碌中 (Radar Error)"}])
 
-# --- 主程式進入點 ---
-
 if __name__ == "__main__":
     if len(sys.argv) > 3:
-        arg1 = sys.argv[1] # raw_message
-        arg2 = sys.argv[2] # user_id
-        arg3 = sys.argv[3] # reply_token
-
+        arg1 = sys.argv[1]
+        arg2 = sys.argv[2]
+        arg3 = sys.argv[3]
         if re.match(r'^-?\d+(\.\d+)?,-?\d+(\.\d+)?$', arg1):
             try:
                 lat_str, lng_str = arg1.split(',')
