@@ -57,10 +57,10 @@ def calculate_distance(lat1, lon1, lat2, lon2):
 def get_url_and_content(url):
     try:
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7' # 強制要求繁體中文
         }
         response = requests.get(url, allow_redirects=True, headers=headers, timeout=15)
-        # 強制設定編碼，避免標題亂碼
         response.encoding = response.apparent_encoding
         return response.url, response.text
     except Exception as e:
@@ -74,33 +74,47 @@ def extract_map_url(text):
 
 def extract_title_from_html(html_content):
     """
-    V1.4 新增：從 HTML 抓取店名
+    V1.5 升級：智慧過濾 generic title
     """
     if not html_content: return None
     
-    # 優先嘗試 og:title (通常最乾淨)
+    candidates = []
+
+    # 1. 抓 og:title
     match = re.search(r'<meta\s+property="og:title"\s+content="([^"]+)"', html_content)
-    if match:
-        title = match.group(1)
-        print(f"🕵️ [DEBUG] 從 og:title 找到店名: {title}")
-        return title
-    
-    # 其次嘗試 <title> 標籤
+    if match: candidates.append(match.group(1))
+
+    # 2. 抓 og:description (很多時候真正的店名在這裡，例如 "星巴克 (XX門市) · 咖啡店...")
+    match = re.search(r'<meta\s+property="og:description"\s+content="([^"]+)"', html_content)
+    if match: 
+        desc = match.group(1)
+        # 通常描述是 "店名 · 評分 · 地址"，我們只取第一段
+        name_part = desc.split('·')[0].strip()
+        candidates.append(name_part)
+
+    # 3. 抓 <title>
     match = re.search(r'<title>(.*?)</title>', html_content)
     if match:
-        title = match.group(1)
-        # 去除 " - Google 地圖" 或 " - Google Maps"
-        title = re.sub(r' - Google\s*(Map|地圖).*', '', title)
-        print(f"🕵️ [DEBUG] 從 <title> 找到店名: {title}")
-        return title.strip()
-        
+        t = re.sub(r' - Google\s*(Map|地圖).*', '', match.group(1)).strip()
+        candidates.append(t)
+
+    print(f"🕵️ [DEBUG] 候選店名清單: {candidates}")
+
+    # --- 過濾邏輯 ---
+    for name in candidates:
+        # 如果名字太短，或是等於 "Google Maps"，就跳過，找下一個
+        if not name: continue
+        if name.lower() in ["google maps", "google map", "google 地圖", "google"]:
+            continue
+        return name # 找到第一個不是廢話的名字，直接回傳
+
     return None
 
 def parse_coordinates(url, html_content=""):
     if not url: return None, None
     url = unquote(url)
 
-    # 策略 A: 網址解析
+    # 策略 A: 網址
     match = re.search(r'@(-?\d+\.\d+),(-?\d+\.\d+)', url)
     if match: return float(match.group(1)), float(match.group(2))
     
@@ -111,26 +125,25 @@ def parse_coordinates(url, html_content=""):
     match_lng = re.search(r'!4d(-?\d+\.\d+)', url)
     if match_lat and match_lng: return float(match_lat.group(1)), float(match_lng.group(2))
 
-    # 策略 B: HTML 解析
+    # 策略 B: HTML
     if html_content:
         if "center=" in html_content:
             match = re.search(r'center=(-?\d+\.\d+)%2C(-?\d+\.\d+)', html_content)
-            if not match:
-                match = re.search(r'center=(-?\d+\.\d+),(-?\d+\.\d+)', html_content)
+            if not match: match = re.search(r'center=(-?\d+\.\d+),(-?\d+\.\d+)', html_content)
             if match: return float(match.group(1)), float(match.group(2))
 
         if "markers=" in html_content:
             match = re.search(r'markers=(-?\d+\.\d+)%2C(-?\d+\.\d+)', html_content)
-            if not match:
-                match = re.search(r'markers=(-?\d+\.\d+),(-?\d+\.\d+)', html_content)
+            if not match: match = re.search(r'markers=(-?\d+\.\d+),(-?\d+\.\d+)', html_content)
             if match: return float(match.group(1)), float(match.group(2))
                 
     return None, None
 
 def determine_category(title):
     if not title: return "其它"
-    food_keywords = ["餐廳", "咖啡", "Coffee", "Cafe", "麵", "飯", "食", "味", "餐酒館", "Bar", "甜點", "火鍋", "料理", "Bistro", "早午餐", "牛排", "壽司", "燒肉", "小吃", "早餐", "午餐", "晚餐", "食堂", "Tea"]
-    travel_keywords = ["車站", "公園", "山", "海", "寺", "廟", "博物館", "步道", "農場", "樂園", "展覽", "View", "Hotel", "民宿", "景點", "文創", "步道", "學校", "中心"]
+    # 增加更多關鍵字
+    food_keywords = ["餐廳", "咖啡", "Coffee", "Cafe", "麵", "飯", "食", "味", "餐酒館", "Bar", "甜點", "火鍋", "料理", "Bistro", "早午餐", "牛排", "壽司", "燒肉", "小吃", "早餐", "午餐", "晚餐", "食堂", "Tea", "飲", "冰"]
+    travel_keywords = ["車站", "公園", "山", "海", "寺", "廟", "博物館", "步道", "農場", "樂園", "展覽", "View", "Hotel", "民宿", "景點", "文創", "步道", "學校", "中心", "診所", "醫院"]
     for kw in food_keywords:
         if kw in title: return "美食"
     for kw in travel_keywords:
@@ -152,7 +165,6 @@ def handle_save_task(raw_message, user_id, reply_token):
 
     print(f"🕵️ [DEBUG] 判定處理網址 -> [{target_url}]")
 
-    # 預設標題
     final_title = "未命名地點"
     message_to_user = ""
 
@@ -160,8 +172,8 @@ def handle_save_task(raw_message, user_id, reply_token):
         final_url, html_content = get_url_and_content(target_url)
         print(f"🕵️ [DEBUG] 還原後的長網址 -> [{final_url}]")
         
-        # --- 標題解析邏輯 V1.4 ---
-        # 1. 先試著從網址解析 (最快)
+        # --- 標題解析 (V1.5) ---
+        # 1. 網址解析
         if "/place/" in final_url:
             try:
                 parts = unquote(final_url).split("/place/")[1].split("/")[0]
@@ -169,13 +181,13 @@ def handle_save_task(raw_message, user_id, reply_token):
             except:
                 pass
         
-        # 2. 如果網址沒標題，或還是未命名，就去挖 HTML
+        # 2. 如果網址沒標題，挖 HTML (現在會過濾掉 "Google Maps")
         if final_title == "未命名地點" or final_title.startswith("http"):
             html_title = extract_title_from_html(html_content)
             if html_title:
                 final_title = html_title
         
-        # 3. 如果還是失敗，用原始訊息的前幾字當備案
+        # 3. 最終備案
         if final_title == "未命名地點":
              final_title = raw_message[:30].replace("\n", " ")
         # -----------------------
