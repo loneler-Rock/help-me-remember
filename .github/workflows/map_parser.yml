@@ -18,14 +18,15 @@ jobs:
           python-version: '3.9'
           
       - name: Install dependencies
+        # 這裡會讀取我們剛瘦身完的 requirements.txt，安裝速度會飛快
         run: pip install -r requirements.txt
 
-      - name: Run Map Saver
+      - name: Run Map Handler
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
         run: |
-          echo "🗺️ [地圖模式] 啟動..."
-          # 呼叫 Python 腳本，傳入 3 個參數
-          python ig_map/map_main.py "${{ github.event.client_payload.message_text }}" "${{ github.event.client_payload.user_id }}" "${{ github.event.client_payload.reply_token }}"
+          echo "🗺️ [地圖核心] 啟動..."
+          # 注意：這裡已經改為執行 main.py 了
+          python ig_map/main.py "${{ github.event.client_payload.message_text }}" "${{ github.event.client_payload.user_id }}" "${{ github.event.client_payload.reply_token }}"
