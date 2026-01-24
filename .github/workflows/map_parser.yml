@@ -1,9 +1,17 @@
 name: Map Saver
 
 on:
+  # 1. 這是給 Make 用的 (自動)
   repository_dispatch:
     types: [save_map]
+  
+  # 2. 這是給人類用的 (手動)
   workflow_dispatch:
+    inputs:
+      test_url:
+        description: '在此輸入要測試的網址'
+        required: true
+        default: 'https://goo.gl/maps/example'
 
 jobs:
   build:
@@ -18,7 +26,6 @@ jobs:
           python-version: '3.9'
           
       - name: Install dependencies
-        # 這裡會讀取我們剛瘦身完的 requirements.txt，安裝速度會飛快
         run: pip install -r requirements.txt
 
       - name: Run Map Handler
@@ -28,5 +35,21 @@ jobs:
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
         run: |
           echo "🗺️ [地圖核心] 啟動..."
-          # 注意：這裡已經改為執行 main.py 了
-          python ig_map/main.py "${{ github.event.client_payload.message_text }}" "${{ github.event.client_payload.user_id }}" "${{ github.event.client_payload.reply_token }}"
+          
+          # --- 智慧參數切換 ---
+          # 如果是 Make 傳來的 (client_payload 有值)，就用 Make 的資料
+          # 如果是手動按的 (inputs 有值)，就用手動輸入的資料
+          
+          # 1. 訊息內容 (Message)
+          MSG="${{ github.event.client_payload.message_text || github.event.inputs.test_url }}"
+          
+          # 2. User ID (手動測試時用 'manual_test_user')
+          UID="${{ github.event.client_payload.user_id || 'manual_test_user' }}"
+          
+          # 3. Reply Token (手動測試時給空值，這樣 Python 就不會報錯說回覆失敗)
+          TOKEN="${{ github.event.client_payload.reply_token || '' }}"
+
+          echo "測試模式: 輸入內容 -> $MSG"
+          
+          # 執行 Python
+          python ig_map/main.py "$MSG" "$UID" "$TOKEN"
