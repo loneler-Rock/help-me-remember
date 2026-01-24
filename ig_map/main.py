@@ -55,15 +55,13 @@ def calculate_distance(lat1, lon1, lat2, lon2):
     return R * c
 
 def get_url_and_content(url):
-    """
-    V1.3 升級：同時回傳「最終網址」和「網頁 HTML 內容」
-    """
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
-        # 取得完整回應
         response = requests.get(url, allow_redirects=True, headers=headers, timeout=15)
+        # 強制設定編碼，避免標題亂碼
+        response.encoding = response.apparent_encoding
         return response.url, response.text
     except Exception as e:
         print(f"⚠️ [DEBUG] 網頁請求失敗: {e}")
@@ -71,18 +69,38 @@ def get_url_and_content(url):
 
 def extract_map_url(text):
     if not text: return None
-    # 廣域捕獲
     match = re.search(r'(https?://[^\s]*(?:google|goo\.gl)[^\s]*)', text)
     return match.group(1) if match else None
 
+def extract_title_from_html(html_content):
+    """
+    V1.4 新增：從 HTML 抓取店名
+    """
+    if not html_content: return None
+    
+    # 優先嘗試 og:title (通常最乾淨)
+    match = re.search(r'<meta\s+property="og:title"\s+content="([^"]+)"', html_content)
+    if match:
+        title = match.group(1)
+        print(f"🕵️ [DEBUG] 從 og:title 找到店名: {title}")
+        return title
+    
+    # 其次嘗試 <title> 標籤
+    match = re.search(r'<title>(.*?)</title>', html_content)
+    if match:
+        title = match.group(1)
+        # 去除 " - Google 地圖" 或 " - Google Maps"
+        title = re.sub(r' - Google\s*(Map|地圖).*', '', title)
+        print(f"🕵️ [DEBUG] 從 <title> 找到店名: {title}")
+        return title.strip()
+        
+    return None
+
 def parse_coordinates(url, html_content=""):
-    """
-    V1.3 核心：雙重解析機制 (先看網址，再看 HTML)
-    """
     if not url: return None, None
     url = unquote(url)
 
-    # --- 策略 A: 從網址解析 (優先) ---
+    # 策略 A: 網址解析
     match = re.search(r'@(-?\d+\.\d+),(-?\d+\.\d+)', url)
     if match: return float(match.group(1)), float(match.group(2))
     
@@ -93,37 +111,26 @@ def parse_coordinates(url, html_content=""):
     match_lng = re.search(r'!4d(-?\d+\.\d+)', url)
     if match_lat and match_lng: return float(match_lat.group(1)), float(match_lng.group(2))
 
-    # --- 策略 B: 從 HTML 內容解析 (針對 googleusercontent) ---
+    # 策略 B: HTML 解析
     if html_content:
-        print("🕵️ [DEBUG] 網址解析失敗，啟動 HTML 深度搜查...")
-        
-        # 搜尋 meta tag 中的 og:image (通常包含 staticmap 連結)
-        # 範例: .../staticmap?center=24.123,121.123&zoom=...
         if "center=" in html_content:
-            match = re.search(r'center=(-?\d+\.\d+)%2C(-?\d+\.\d+)', html_content) # URL encoded comma
+            match = re.search(r'center=(-?\d+\.\d+)%2C(-?\d+\.\d+)', html_content)
             if not match:
-                match = re.search(r'center=(-?\d+\.\d+),(-?\d+\.\d+)', html_content) # Normal comma
-            
-            if match:
-                print("🕵️ [DEBUG] 從 HTML meta (center) 找到座標！")
-                return float(match.group(1)), float(match.group(2))
+                match = re.search(r'center=(-?\d+\.\d+),(-?\d+\.\d+)', html_content)
+            if match: return float(match.group(1)), float(match.group(2))
 
-        # 搜尋 markers
         if "markers=" in html_content:
             match = re.search(r'markers=(-?\d+\.\d+)%2C(-?\d+\.\d+)', html_content)
             if not match:
                 match = re.search(r'markers=(-?\d+\.\d+),(-?\d+\.\d+)', html_content)
-            
-            if match:
-                print("🕵️ [DEBUG] 從 HTML meta (markers) 找到座標！")
-                return float(match.group(1)), float(match.group(2))
+            if match: return float(match.group(1)), float(match.group(2))
                 
     return None, None
 
 def determine_category(title):
     if not title: return "其它"
-    food_keywords = ["餐廳", "咖啡", "Coffee", "Cafe", "麵", "飯", "食", "味", "餐酒館", "Bar", "甜點", "火鍋", "料理", "Bistro", "早午餐", "牛排", "壽司", "燒肉", "小吃"]
-    travel_keywords = ["車站", "公園", "山", "海", "寺", "廟", "博物館", "步道", "農場", "樂園", "展覽", "View", "Hotel", "民宿", "景點", "文創", "步道"]
+    food_keywords = ["餐廳", "咖啡", "Coffee", "Cafe", "麵", "飯", "食", "味", "餐酒館", "Bar", "甜點", "火鍋", "料理", "Bistro", "早午餐", "牛排", "壽司", "燒肉", "小吃", "早餐", "午餐", "晚餐", "食堂", "Tea"]
+    travel_keywords = ["車站", "公園", "山", "海", "寺", "廟", "博物館", "步道", "農場", "樂園", "展覽", "View", "Hotel", "民宿", "景點", "文創", "步道", "學校", "中心"]
     for kw in food_keywords:
         if kw in title: return "美食"
     for kw in travel_keywords:
@@ -139,40 +146,49 @@ def handle_save_task(raw_message, user_id, reply_token):
     if not raw_message or not raw_message.strip():
         return
 
-    # 1. 抓取網址
     target_url = extract_map_url(raw_message)
     if not target_url and "google" in raw_message and "http" in raw_message:
          target_url = raw_message.strip()
 
     print(f"🕵️ [DEBUG] 判定處理網址 -> [{target_url}]")
 
-    temp_title = raw_message[:30].replace("\n", " ") if raw_message else "未命名地點"
+    # 預設標題
+    final_title = "未命名地點"
     message_to_user = ""
 
     if target_url:
-        # 2. 取得網址 與 HTML 內容 (V1.3 關鍵)
         final_url, html_content = get_url_and_content(target_url)
         print(f"🕵️ [DEBUG] 還原後的長網址 -> [{final_url}]")
-        # print(f"🕵️ [DEBUG] HTML 前100字 -> {html_content[:100]}") # Debug 用
         
-        # 嘗試從網址或 HTML 抓標題
+        # --- 標題解析邏輯 V1.4 ---
+        # 1. 先試著從網址解析 (最快)
         if "/place/" in final_url:
             try:
                 parts = unquote(final_url).split("/place/")[1].split("/")[0]
-                temp_title = parts.replace("+", " ")
+                final_title = parts.replace("+", " ")
             except:
                 pass
         
-        # 3. 雙重解析座標
-        lat, lng = parse_coordinates(final_url, html_content)
-        print(f"🕵️ [DEBUG] 最終座標結果 -> Lat: {lat}, Lng: {lng}")
+        # 2. 如果網址沒標題，或還是未命名，就去挖 HTML
+        if final_title == "未命名地點" or final_title.startswith("http"):
+            html_title = extract_title_from_html(html_content)
+            if html_title:
+                final_title = html_title
         
-        category = determine_category(temp_title)
+        # 3. 如果還是失敗，用原始訊息的前幾字當備案
+        if final_title == "未命名地點":
+             final_title = raw_message[:30].replace("\n", " ")
+        # -----------------------
+
+        lat, lng = parse_coordinates(final_url, html_content)
+        print(f"🕵️ [DEBUG] 最終座標 -> {lat}, {lng}, 最終店名 -> {final_title}")
+        
+        category = determine_category(final_title)
 
         if lat and lng:
             data = {
                 "user_id": user_id,
-                "location_name": temp_title,
+                "location_name": final_title,
                 "google_map_url": final_url,
                 "address": final_url,
                 "latitude": lat,
@@ -183,18 +199,18 @@ def handle_save_task(raw_message, user_id, reply_token):
             }
             try:
                 supabase.table("map_spots").insert(data).execute()
-                print(f"✅ 成功寫入資料庫: {temp_title}")
-                message_to_user = f"✅ 已收藏地點！\n類別: {category}\n標題: {temp_title}"
+                print(f"✅ 成功寫入資料庫: {final_title}")
+                message_to_user = f"✅ 已收藏地點！\n類別: {category}\n店名: {final_title}"
             except Exception as e:
-                print(f"❌ 資料庫寫入失敗: {e}")
+                print(f"❌ DB Error: {e}")
                 message_to_user = "❌ 系統錯誤，儲存失敗。"
         else:
-            print("⚠️ [DEBUG] 網址與HTML都找不到座標，存入待處理")
-            backup_save(user_id, temp_title, raw_message, target_url)
-            message_to_user = "⚠️ 連結已接收，但無法解析座標 (已存入待處理清單)。"
+            print("⚠️ [DEBUG] 找不到座標，存入待處理")
+            backup_save(user_id, final_title, raw_message, target_url)
+            message_to_user = "⚠️ 連結已接收，但無法解析座標。"
     else:
-        print("⚠️ [DEBUG] 無法識別為地圖連結，存為純文字")
-        backup_save(user_id, temp_title, raw_message, "")
+        print("⚠️ [DEBUG] 非地圖連結")
+        backup_save(user_id, raw_message[:30], raw_message, "")
         message_to_user = "📝 已存為純文字筆記。"
 
     if message_to_user:
@@ -213,7 +229,7 @@ def backup_save(user_id, title, content, url):
     }
     try:
         supabase.table("map_spots").insert(data).execute()
-        print("✅ 已寫入備份/待處理清單")
+        print("✅ 已寫入備份")
     except Exception as e:
         print(f"❌ 備份寫入失敗: {e}")
 
