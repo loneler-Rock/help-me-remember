@@ -58,7 +58,7 @@ def get_url_and_content(url):
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7' # 強制要求繁體中文
+            'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7'
         }
         response = requests.get(url, allow_redirects=True, headers=headers, timeout=15)
         response.encoding = response.apparent_encoding
@@ -73,26 +73,18 @@ def extract_map_url(text):
     return match.group(1) if match else None
 
 def extract_title_from_html(html_content):
-    """
-    V1.5 升級：智慧過濾 generic title
-    """
     if not html_content: return None
-    
     candidates = []
-
-    # 1. 抓 og:title
+    
     match = re.search(r'<meta\s+property="og:title"\s+content="([^"]+)"', html_content)
     if match: candidates.append(match.group(1))
 
-    # 2. 抓 og:description (很多時候真正的店名在這裡，例如 "星巴克 (XX門市) · 咖啡店...")
     match = re.search(r'<meta\s+property="og:description"\s+content="([^"]+)"', html_content)
     if match: 
         desc = match.group(1)
-        # 通常描述是 "店名 · 評分 · 地址"，我們只取第一段
         name_part = desc.split('·')[0].strip()
         candidates.append(name_part)
 
-    # 3. 抓 <title>
     match = re.search(r'<title>(.*?)</title>', html_content)
     if match:
         t = re.sub(r' - Google\s*(Map|地圖).*', '', match.group(1)).strip()
@@ -100,15 +92,40 @@ def extract_title_from_html(html_content):
 
     print(f"🕵️ [DEBUG] 候選店名清單: {candidates}")
 
-    # --- 過濾邏輯 ---
     for name in candidates:
-        # 如果名字太短，或是等於 "Google Maps"，就跳過，找下一個
         if not name: continue
+        # 過濾廢話
         if name.lower() in ["google maps", "google map", "google 地圖", "google"]:
             continue
-        return name # 找到第一個不是廢話的名字，直接回傳
+        return name
 
     return None
+
+def get_name_from_osm(lat, lng):
+    """
+    V1.6 新增：使用 OpenStreetMap 進行逆向地理編碼 (Reverse Geocoding)
+    當 Google 不給店名時，我們問 OSM。
+    """
+    try:
+        print(f"🕵️ [DEBUG] 啟動 OSM 救援查詢 -> {lat}, {lng}")
+        url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lng}&zoom=18&addressdetails=1&accept-language=zh-TW"
+        # Nominatim 規定必須帶 User-Agent
+        headers = {'User-Agent': 'HelpMeRememberBot/1.0'}
+        r = requests.get(url, headers=headers, timeout=10)
+        data = r.json()
+        
+        # 優先找 "name" (設施名稱)
+        if 'name' in data and data['name']:
+            return data['name']
+        
+        # 其次找顯示名稱的前段
+        if 'display_name' in data:
+            return data['display_name'].split(',')[0]
+            
+        return None
+    except Exception as e:
+        print(f"⚠️ [DEBUG] OSM 查詢失敗: {e}")
+        return None
 
 def parse_coordinates(url, html_content=""):
     if not url: return None, None
@@ -117,10 +134,8 @@ def parse_coordinates(url, html_content=""):
     # 策略 A: 網址
     match = re.search(r'@(-?\d+\.\d+),(-?\d+\.\d+)', url)
     if match: return float(match.group(1)), float(match.group(2))
-    
     match = re.search(r'q=(-?\d+\.\d+),(-?\d+\.\d+)', url)
     if match: return float(match.group(1)), float(match.group(2))
-    
     match_lat = re.search(r'!3d(-?\d+\.\d+)', url)
     match_lng = re.search(r'!4d(-?\d+\.\d+)', url)
     if match_lat and match_lng: return float(match_lat.group(1)), float(match_lng.group(2))
@@ -131,7 +146,6 @@ def parse_coordinates(url, html_content=""):
             match = re.search(r'center=(-?\d+\.\d+)%2C(-?\d+\.\d+)', html_content)
             if not match: match = re.search(r'center=(-?\d+\.\d+),(-?\d+\.\d+)', html_content)
             if match: return float(match.group(1)), float(match.group(2))
-
         if "markers=" in html_content:
             match = re.search(r'markers=(-?\d+\.\d+)%2C(-?\d+\.\d+)', html_content)
             if not match: match = re.search(r'markers=(-?\d+\.\d+),(-?\d+\.\d+)', html_content)
@@ -141,7 +155,6 @@ def parse_coordinates(url, html_content=""):
 
 def determine_category(title):
     if not title: return "其它"
-    # 增加更多關鍵字
     food_keywords = ["餐廳", "咖啡", "Coffee", "Cafe", "麵", "飯", "食", "味", "餐酒館", "Bar", "甜點", "火鍋", "料理", "Bistro", "早午餐", "牛排", "壽司", "燒肉", "小吃", "早餐", "午餐", "晚餐", "食堂", "Tea", "飲", "冰"]
     travel_keywords = ["車站", "公園", "山", "海", "寺", "廟", "博物館", "步道", "農場", "樂園", "展覽", "View", "Hotel", "民宿", "景點", "文創", "步道", "學校", "中心", "診所", "醫院"]
     for kw in food_keywords:
@@ -172,8 +185,7 @@ def handle_save_task(raw_message, user_id, reply_token):
         final_url, html_content = get_url_and_content(target_url)
         print(f"🕵️ [DEBUG] 還原後的長網址 -> [{final_url}]")
         
-        # --- 標題解析 (V1.5) ---
-        # 1. 網址解析
+        # 1. 嘗試從 HTML/網址 抓取店名
         if "/place/" in final_url:
             try:
                 parts = unquote(final_url).split("/place/")[1].split("/")[0]
@@ -181,19 +193,23 @@ def handle_save_task(raw_message, user_id, reply_token):
             except:
                 pass
         
-        # 2. 如果網址沒標題，挖 HTML (現在會過濾掉 "Google Maps")
         if final_title == "未命名地點" or final_title.startswith("http"):
             html_title = extract_title_from_html(html_content)
             if html_title:
                 final_title = html_title
         
-        # 3. 最終備案
-        if final_title == "未命名地點":
-             final_title = raw_message[:30].replace("\n", " ")
-        # -----------------------
-
         lat, lng = parse_coordinates(final_url, html_content)
-        print(f"🕵️ [DEBUG] 最終座標 -> {lat}, {lng}, 最終店名 -> {final_title}")
+        print(f"🕵️ [DEBUG] HTML解析結果 -> 座標: {lat}, {lng}, 店名: {final_title}")
+
+        # ★★★ V1.6 新增：如果店名還是廢話，但有座標，就問 OSM ★★★
+        is_bad_name = (final_title == "未命名地點" or final_title.startswith("http") or "google" in final_title.lower())
+        
+        if lat and lng and is_bad_name:
+            osm_name = get_name_from_osm(lat, lng)
+            if osm_name:
+                final_title = osm_name
+                print(f"🕵️ [DEBUG] OSM 救援成功，更新店名為: {final_title}")
+        # ----------------------------------------------------
         
         category = determine_category(final_title)
 
