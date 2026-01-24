@@ -55,12 +55,18 @@ def calculate_distance(lat1, lon1, lat2, lon2):
     return R * c
 
 def resolve_url(url):
-    """還原短網址，增加 User-Agent 避免被 Google 擋"""
+    """
+    還原短網址 (強效版 V1.2)
+    改用 GET 請求並開啟 stream=True，能解決 googleusercontent 等頑固縮網址，
+    同時避免下載整個網頁內容以節省時間。
+    """
     try:
-        # 模擬瀏覽器，確保伺服器願意吐出真實網址
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-        # allow_redirects=True 會自動跟隨跳轉，直到最後的長網址
-        response = requests.head(url, allow_redirects=True, headers=headers, timeout=10)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        # allow_redirects=True: 自動跟隨跳轉
+        # stream=True: 只讀取連線資訊，不下載網頁 Body，速度快
+        response = requests.get(url, allow_redirects=True, headers=headers, timeout=15, stream=True)
         return response.url
     except Exception as e:
         print(f"⚠️ [DEBUG] 解析短網址失敗: {e}")
@@ -69,9 +75,7 @@ def resolve_url(url):
 def extract_map_url(text):
     if not text: return None
     
-    # ★★★ V1.1 修正點：超廣域捕獲 ★★★
-    # 只要是 http 開頭，且網址中間包含 "google" 或 "goo.gl"，全部視為潛在目標
-    # 這能抓到 googleusercontent, maps.app.goo.gl, www.google.com.tw 等所有變形
+    # 廣域捕獲：只要網址裡有 "google" 或 "goo.gl" 都抓進來
     match = re.search(r'(https?://[^\s]*(?:google|goo\.gl)[^\s]*)', text)
     
     return match.group(1) if match else None
@@ -82,15 +86,15 @@ def parse_google_maps_url(url):
     # 解碼網址 (處理中文亂碼)
     url = unquote(url)
     
-    # 模式 A: @lat,lng (最常見)
+    # 模式 A: @lat,lng
     match = re.search(r'@(-?\d+\.\d+),(-?\d+\.\d+)', url)
     if match: return float(match.group(1)), float(match.group(2))
     
-    # 模式 B: q=lat,lng (查詢參數)
+    # 模式 B: q=lat,lng
     match = re.search(r'q=(-?\d+\.\d+),(-?\d+\.\d+)', url)
     if match: return float(match.group(1)), float(match.group(2))
     
-    # 模式 C: !3d...!4d (電腦版長網址內崁代碼)
+    # 模式 C: !3d...!4d
     match_lat = re.search(r'!3d(-?\d+\.\d+)', url)
     match_lng = re.search(r'!4d(-?\d+\.\d+)', url)
     if match_lat and match_lng: return float(match_lat.group(1)), float(match_lng.group(2))
@@ -99,8 +103,8 @@ def parse_google_maps_url(url):
 
 def determine_category(title):
     if not title: return "其它"
-    food_keywords = ["餐廳", "咖啡", "Coffee", "Cafe", "麵", "飯", "食", "味", "餐酒館", "Bar", "甜點", "火鍋", "料理", "Bistro", "早午餐", "牛排", "壽司", "燒肉"]
-    travel_keywords = ["車站", "公園", "山", "海", "寺", "廟", "博物館", "步道", "農場", "樂園", "展覽", "View", "Hotel", "民宿", "景點", "文創"]
+    food_keywords = ["餐廳", "咖啡", "Coffee", "Cafe", "麵", "飯", "食", "味", "餐酒館", "Bar", "甜點", "火鍋", "料理", "Bistro", "早午餐", "牛排", "壽司", "燒肉", "小吃"]
+    travel_keywords = ["車站", "公園", "山", "海", "寺", "廟", "博物館", "步道", "農場", "樂園", "展覽", "View", "Hotel", "民宿", "景點", "文創", "步道"]
     for kw in food_keywords:
         if kw in title: return "美食"
     for kw in travel_keywords:
@@ -116,16 +120,16 @@ def handle_save_task(raw_message, user_id, reply_token):
     if not raw_message or not raw_message.strip():
         return
 
-    # 1. 嘗試抓取網址
+    # 1. 抓取網址
     target_url = extract_map_url(raw_message)
     
-    # 2. 如果 Regex 沒抓到，但文字裡有 http 和 google，直接把整段當作網址試試
+    # 補漏：如果 Regex 沒抓到，但有關鍵字，直接整句當網址
     if not target_url and "google" in raw_message and "http" in raw_message:
          target_url = raw_message.strip()
 
     print(f"🕵️ [DEBUG] 判定處理網址 -> [{target_url}]")
 
-    # 嘗試提取標題
+    # 嘗試提取標題 (從長網址的 /place/ 區段)
     temp_title = "未命名地點"
     if target_url and "/place/" in target_url:
         try:
@@ -139,10 +143,18 @@ def handle_save_task(raw_message, user_id, reply_token):
     message_to_user = ""
 
     if target_url:
-        # 3. 還原長網址 (這裡會解決 googleusercontent 跳轉問題)
+        # 3. 強效還原長網址 (這裡會解決 googleusercontent 的問題)
         final_url = resolve_url(target_url)
         print(f"🕵️ [DEBUG] 還原後的長網址 -> [{final_url}]")
         
+        # 如果還原後的網址裡終於出現了地名，試著更新標題
+        if "/place/" in final_url and temp_title == "未命名地點":
+             try:
+                parts = unquote(final_url).split("/place/")[1].split("/")[0]
+                temp_title = parts.replace("+", " ")
+             except:
+                pass
+
         # 4. 解析座標
         lat, lng = parse_google_maps_url(final_url)
         print(f"🕵️ [DEBUG] 解析座標結果 -> Lat: {lat}, Lng: {lng}")
@@ -169,7 +181,7 @@ def handle_save_task(raw_message, user_id, reply_token):
                 print(f"❌ 資料庫寫入失敗: {e}")
                 message_to_user = "❌ 系統錯誤，儲存失敗。"
         else:
-            # 有網址但解不出座標 (可能是純圖片連結或未知的 Google 頁面)
+            # 有網址但解不出座標
             print("⚠️ [DEBUG] 有網址但抓不到座標，存入待處理")
             backup_save(user_id, temp_title, raw_message, target_url)
             message_to_user = "⚠️ 連結已接收，但無法解析座標 (已存入待處理清單)。"
@@ -270,11 +282,10 @@ def handle_radar_task(user_lat, user_lng, user_id, reply_token):
 
 if __name__ == "__main__":
     if len(sys.argv) > 3:
-        arg1 = sys.argv[1] # raw_message (文字或座標字串)
+        arg1 = sys.argv[1] # raw_message
         arg2 = sys.argv[2] # user_id
         arg3 = sys.argv[3] # reply_token
 
-        # 判斷是否為座標 (雷達模式)
         if re.match(r'^-?\d+(\.\d+)?,-?\d+(\.\d+)?$', arg1):
             try:
                 lat_str, lng_str = arg1.split(',')
@@ -282,7 +293,6 @@ if __name__ == "__main__":
             except:
                 handle_save_task(arg1, arg2, arg3)
         else:
-            # 存檔模式
             handle_save_task(arg1, arg2, arg3)
     else:
-        print("❌ 參數不足: 需 message, user_id, reply_token")
+        print("❌ 參數不足")
