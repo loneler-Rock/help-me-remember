@@ -5,6 +5,8 @@ import re
 import requests
 import json
 import math
+import csv
+import io
 from supabase import create_client, Client
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -20,10 +22,10 @@ LINE_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
 
 # --- UI配色設定 ---
 CATEGORY_COLORS = {
-    "美食": "#E67E22",  # 橘色
-    "景點": "#27AE60",  # 綠色
-    "住宿": "#2980B9",  # 藍色
-    "其它": "#7F8C8D"   # 灰色
+    "美食": "#E67E22",
+    "景點": "#27AE60",
+    "住宿": "#2980B9",
+    "其它": "#7F8C8D"
 }
 
 CATEGORY_ICONS = {
@@ -82,7 +84,7 @@ def parse_osm_category(data):
 def get_osm_by_coordinate(lat, lng):
     try:
         url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lng}&zoom=18&addressdetails=1&accept-language=zh-TW"
-        headers = {'User-Agent': 'HelpMeRememberBot/3.0'}
+        headers = {'User-Agent': 'HelpMeRememberBot/3.1'}
         r = requests.get(url, headers=headers, timeout=5)
         return parse_osm_category(r.json())
     except:
@@ -93,7 +95,7 @@ def get_osm_by_name(name, lat, lng):
         viewbox = f"{lng-0.002},{lat-0.002},{lng+0.002},{lat+0.002}"
         print(f"🕵️ [DEBUG] 啟動 OSM 姓名偵探: 搜尋 '{name}'...")
         url = f"https://nominatim.openstreetmap.org/search?q={name}&format=json&viewbox={viewbox}&bounded=1&limit=1&accept-language=zh-TW"
-        headers = {'User-Agent': 'HelpMeRememberBot/3.0'}
+        headers = {'User-Agent': 'HelpMeRememberBot/3.1'}
         r = requests.get(url, headers=headers, timeout=5)
         data = r.json()
         if data:
@@ -128,7 +130,7 @@ def determine_category_smart(title, full_text, lat, lng):
         
     return "其它"
 
-# --- 3. 瀏覽器爬蟲 (V2.8 核心) ---
+# --- 3. 瀏覽器爬蟲 ---
 
 def get_real_url_with_browser(url):
     print(f"🕵️ [DEBUG] 啟動 Chrome (V2.8)... 目標: {url}")
@@ -149,7 +151,6 @@ def get_real_url_with_browser(url):
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=options)
         
-        # Fake GPS: Taipei (強制 Google 顯示中文與正確座標)
         params = {"latitude": 25.033964, "longitude": 121.564468, "accuracy": 100}
         driver.execute_cdp_cmd("Emulation.setGeolocationOverride", params)
 
@@ -177,25 +178,19 @@ def get_real_url_with_browser(url):
             
     return final_url, page_title, page_text
 
-# --- 4. 雷達模式工具 (V3.0 美食獵人版) ---
+# --- 4. 雷達模式 (美食獵人版) ---
 
 def get_nearby_spots(user_id, lat, lng, limit=10, target_category="美食"):
-    """從 Supabase 拉取資料，並只鎖定特定類別 (預設美食)"""
     try:
-        # 抓取該使用者的所有地點
         response = supabase.table("map_spots").select("*").eq("user_id", user_id).execute()
         spots = response.data
         
         results = []
         for spot in spots:
-            # 1. 過濾類別
             current_cat = spot.get('category', '其它')
-            
-            # 如果指定了類別 (如美食)，則只保留該類別
             if target_category and current_cat != target_category:
                 continue
 
-            # 2. 計算距離
             s_lat = spot.get('latitude')
             s_lng = spot.get('longitude')
             if s_lat and s_lng:
@@ -203,7 +198,6 @@ def get_nearby_spots(user_id, lat, lng, limit=10, target_category="美食"):
                 spot['dist_score'] = dist
                 results.append(spot)
         
-        # 排序：距離由近到遠
         results.sort(key=lambda x: x['dist_score'])
         return results[:limit]
     except Exception as e:
@@ -211,7 +205,6 @@ def get_nearby_spots(user_id, lat, lng, limit=10, target_category="美食"):
         return []
 
 def create_radar_flex(spots):
-    """產生 LINE Flex Message Carousel JSON"""
     if not spots:
         return {"type": "text", "text": "🍜 哎呀！您的附近暫時沒有收藏的「美食」。\n\n快去 Google Maps 找些好吃的店分享給我吧！"}
 
@@ -281,7 +274,56 @@ def create_radar_flex(spots):
         }
     }
 
-# --- 5. 任務處理主邏輯 ---
+# --- 5. 匯出模式 (V3.1 新增) ---
+def handle_export_task(user_id, reply_token):
+    print(f"📤 [匯出模式] 準備匯出 {user_id} 的資料...")
+    try:
+        # 1. 抓取所有資料
+        response = supabase.table("map_spots").select("*").eq("user_id", user_id).execute()
+        spots = response.data
+        
+        if not spots:
+            reply_line(reply_token, [{"type": "text", "text": "📭 您的地圖還是空的，無法匯出。"}])
+            return
+
+        # 2. 製作 CSV
+        output = io.StringIO()
+        # 定義 CSV 欄位，這格式可以直接匯入 Google My Maps
+        fieldnames = ['Name', 'Category', 'Address', 'Latitude', 'Longitude', 'GoogleMapURL']
+        writer = csv.DictWriter(output, fieldnames=fieldnames)
+        writer.writeheader()
+        
+        for spot in spots:
+            writer.writerow({
+                'Name': spot.get('location_name', '未命名'),
+                'Category': spot.get('category', '其它'),
+                'Address': spot.get('address', ''),
+                'Latitude': spot.get('latitude', ''),
+                'Longitude': spot.get('longitude', ''),
+                'GoogleMapURL': spot.get('google_map_url', '')
+            })
+        
+        csv_content = output.getvalue()
+        
+        # 3. 上傳到 file.io (一次性暫存)
+        # 這裡設定 14 天有效 (14d)，但下載一次後就會銷毀，保證隱私
+        files = {'file': ('my_map.csv', csv_content)}
+        r = requests.post('https://file.io/?expires=14d', files=files)
+        
+        if r.status_code == 200:
+            link = r.json().get('link')
+            reply_line(reply_token, [
+                {"type": "text", "text": f"✅ 匯出成功！\n\n這是一個一次性下載連結，請用電腦打開並下載 CSV 檔案：\n{link}\n\n💡 提示：您可以將此檔案匯入 Google Maps 的「我的地圖」功能。"}
+            ])
+        else:
+            reply_line(reply_token, [{"type": "text", "text": "❌ 上傳失敗，請稍後再試。"}])
+
+    except Exception as e:
+        print(f"❌ 匯出錯誤: {e}")
+        reply_line(reply_token, [{"type": "text", "text": "❌ 系統發生錯誤。"}])
+
+
+# --- 6. 任務處理主邏輯 ---
 
 def extract_map_url(text):
     if not text: return None
@@ -298,3 +340,85 @@ def parse_coordinates(url):
     match_lat = re.search(r'!3d(-?\d+\.\d+)', url)
     match_lng = re.search(r'!4d(-?\d+\.\d+)', url)
     if match_lat and match_lng: return float(match_lat.group(1)), float(match_lng.group(2))
+    return None, None
+
+def check_duplicate(user_id, location_name):
+    try:
+        response = supabase.table("map_spots").select("id").eq("user_id", user_id).eq("location_name", location_name).execute()
+        if response.data and len(response.data) > 0:
+            return response.data[0]['id']
+        return None
+    except:
+        return None
+
+# 存檔模式
+def handle_save_task(raw_message, user_id, reply_token):
+    print(f"📥 [存檔模式] 開始處理...")
+    target_url = extract_map_url(raw_message)
+    if not target_url and ("google" in raw_message or "goo.gl" in raw_message) and "http" in raw_message:
+         target_url = raw_message.strip()
+
+    if not target_url:
+        print("⚠️ [DEBUG] 非地圖連結")
+        reply_line(reply_token, [{"type": "text", "text": "📝 已存為純文字筆記(尚未支援)。"}])
+        return
+
+    final_url, page_title, page_text = get_real_url_with_browser(target_url)
+    lat, lng = parse_coordinates(final_url)
+    final_title = page_title.replace(" - Google 地圖", "").replace(" - Google Maps", "").strip()
+    if final_title == "Google Maps": final_title = "未命名地點"
+
+    category = determine_category_smart(final_title, page_text, lat, lng)
+    print(f"🕵️ [DEBUG] 準備存檔 -> 店名: {final_title} | 類別: {category}")
+
+    if lat and lng:
+        existing_id = check_duplicate(user_id, final_title)
+        data = {
+            "user_id": user_id, "location_name": final_title, "google_map_url": final_url,
+            "address": final_url, "latitude": lat, "longitude": lng, "category": category,
+            "geom": f"POINT({lng} {lat})", "created_at": "now()"
+        }
+        try:
+            if existing_id:
+                supabase.table("map_spots").update(data).eq("id", existing_id).execute()
+            else:
+                supabase.table("map_spots").insert(data).execute()
+            reply_line(reply_token, [{"type": "text", "text": f"✅ 已收藏！\n店名: {final_title}\n分類: {category}"}])
+        except Exception as e:
+            reply_line(reply_token, [{"type": "text", "text": "❌ 系統錯誤"}])
+    else:
+        reply_line(reply_token, [{"type": "text", "text": "⚠️ 連結已接收，但無法解析座標。"}])
+
+# 雷達模式
+def handle_radar_task(lat_str, lng_str, user_id, reply_token):
+    print(f"📡 [雷達模式] 啟動... 中心點: {lat_str}, {lng_str}")
+    try:
+        lat = float(lat_str)
+        lng = float(lng_str)
+        nearby_spots = get_nearby_spots(user_id, lat, lng, limit=10, target_category="美食")
+        flex_message = create_radar_flex(nearby_spots)
+        reply_line(reply_token, [flex_message])
+    except ValueError:
+        reply_line(reply_token, [{"type": "text", "text": "❌ 座標資料錯誤"}])
+
+# --- 主程式入口 ---
+if __name__ == "__main__":
+    if len(sys.argv) > 3:
+        input_content = sys.argv[1].strip()
+        user_id = sys.argv[2]
+        reply_token = sys.argv[3]
+        
+        # 1. 雷達模式：檢查是否為座標
+        if re.match(r'^-?\d+(\.\d+)?,-?\d+(\.\d+)?$', input_content):
+            lat_str, lng_str = input_content.split(',')
+            handle_radar_task(lat_str, lng_str, user_id, reply_token)
+            
+        # 2. 匯出模式：檢查關鍵字
+        elif input_content.lower() in ["export", "匯出", "地圖匯出"]:
+            handle_export_task(user_id, reply_token)
+            
+        # 3. 存檔模式：預設為網址處理
+        else:
+            handle_save_task(input_content, user_id, reply_token)
+    else:
+        print("❌ 參數不足")
