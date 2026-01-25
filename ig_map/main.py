@@ -55,21 +55,45 @@ def calculate_distance(lat1, lon1, lat2, lon2):
     return R * c
 
 def get_url_and_content(url):
+    """
+    V1.7 升級：攔截歷史跳轉 (Redirect History)
+    解決 GitHub 美國機房被導向 Google Consent 頁面導致座標錯誤的問題。
+    """
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
             'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7'
         }
+        # 這裡會自動跟隨跳轉，最終可能停在 consent.google.com
         response = requests.get(url, allow_redirects=True, headers=headers, timeout=15)
         response.encoding = response.apparent_encoding
-        return response.url, response.text
+        
+        final_url = response.url
+        html_content = response.text
+        
+        print(f"🕵️ [DEBUG] 最終抵達網址: {final_url}")
+
+        # ★★★ 關鍵修正：檢查跳轉過程 ★★★
+        # 如果最終網址變成 consent.google.com 或是沒有座標的頁面
+        # 我們就回頭去翻「歷史紀錄」，找那個曾經出現過的「完美長網址」
+        for history_resp in response.history:
+            h_url = history_resp.url
+            # 如果歷史網址包含 /place/ (店名) 或 !3d (座標)，那才是我們要的！
+            if "/place/" in h_url or "!3d" in h_url or "google.com/maps/place" in h_url:
+                print(f"🕵️ [DEBUG] 攔截到中間層的真實網址: {h_url}")
+                final_url = h_url
+                # 我們不需要中間層的 HTML，因為光是網址就足夠解析店名和座標了
+                break
+        
+        return final_url, html_content
+
     except Exception as e:
         print(f"⚠️ [DEBUG] 網頁請求失敗: {e}")
         return url, ""
 
 def extract_map_url(text):
     if not text: return None
-    match = re.search(r'(https?://[^\s]*(?:google|goo\.gl)[^\s]*)', text)
+    match = re.search(r'(https?://[^\s]*(?:google|goo\.gl|maps\.app\.goo\.gl)[^\s]*)', text)
     return match.group(1) if match else None
 
 def extract_title_from_html(html_content):
@@ -90,48 +114,31 @@ def extract_title_from_html(html_content):
         t = re.sub(r' - Google\s*(Map|地圖).*', '', match.group(1)).strip()
         candidates.append(t)
 
-    print(f"🕵️ [DEBUG] 候選店名清單: {candidates}")
-
     for name in candidates:
         if not name: continue
-        # 過濾廢話
         if name.lower() in ["google maps", "google map", "google 地圖", "google"]:
             continue
         return name
-
     return None
 
 def get_name_from_osm(lat, lng):
-    """
-    V1.6 新增：使用 OpenStreetMap 進行逆向地理編碼 (Reverse Geocoding)
-    當 Google 不給店名時，我們問 OSM。
-    """
     try:
         print(f"🕵️ [DEBUG] 啟動 OSM 救援查詢 -> {lat}, {lng}")
         url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lng}&zoom=18&addressdetails=1&accept-language=zh-TW"
-        # Nominatim 規定必須帶 User-Agent
         headers = {'User-Agent': 'HelpMeRememberBot/1.0'}
         r = requests.get(url, headers=headers, timeout=10)
         data = r.json()
-        
-        # 優先找 "name" (設施名稱)
-        if 'name' in data and data['name']:
-            return data['name']
-        
-        # 其次找顯示名稱的前段
-        if 'display_name' in data:
-            return data['display_name'].split(',')[0]
-            
+        if 'name' in data and data['name']: return data['name']
+        if 'display_name' in data: return data['display_name'].split(',')[0]
         return None
-    except Exception as e:
-        print(f"⚠️ [DEBUG] OSM 查詢失敗: {e}")
+    except:
         return None
 
 def parse_coordinates(url, html_content=""):
     if not url: return None, None
     url = unquote(url)
 
-    # 策略 A: 網址
+    # 策略 A: 網址 (優先權最高，因為這是從攔截到的真實網址解析的)
     match = re.search(r'@(-?\d+\.\d+),(-?\d+\.\d+)', url)
     if match: return float(match.group(1)), float(match.group(2))
     match = re.search(r'q=(-?\d+\.\d+),(-?\d+\.\d+)', url)
@@ -140,7 +147,7 @@ def parse_coordinates(url, html_content=""):
     match_lng = re.search(r'!4d(-?\d+\.\d+)', url)
     if match_lat and match_lng: return float(match_lat.group(1)), float(match_lng.group(2))
 
-    # 策略 B: HTML
+    # 策略 B: HTML (只有當網址解不出來時才用，但要注意可能解到 Consent Page 的座標)
     if html_content:
         if "center=" in html_content:
             match = re.search(r'center=(-?\d+\.\d+)%2C(-?\d+\.\d+)', html_content)
@@ -173,7 +180,8 @@ def handle_save_task(raw_message, user_id, reply_token):
         return
 
     target_url = extract_map_url(raw_message)
-    if not target_url and "google" in raw_message and "http" in raw_message:
+    # 補漏：如果 Regex 沒抓到，但有 google 關鍵字，試著整句解析
+    if not target_url and ("google" in raw_message or "goo.gl" in raw_message) and "http" in raw_message:
          target_url = raw_message.strip()
 
     print(f"🕵️ [DEBUG] 判定處理網址 -> [{target_url}]")
@@ -185,7 +193,7 @@ def handle_save_task(raw_message, user_id, reply_token):
         final_url, html_content = get_url_and_content(target_url)
         print(f"🕵️ [DEBUG] 還原後的長網址 -> [{final_url}]")
         
-        # 1. 嘗試從 HTML/網址 抓取店名
+        # 1. 嘗試從 網址 (攔截到的真實網址) 抓取店名
         if "/place/" in final_url:
             try:
                 parts = unquote(final_url).split("/place/")[1].split("/")[0]
@@ -193,23 +201,22 @@ def handle_save_task(raw_message, user_id, reply_token):
             except:
                 pass
         
+        # 2. 如果網址沒標題，挖 HTML (注意：如果掉進 Consent Page，這裡挖出來的可能是 Google Maps)
         if final_title == "未命名地點" or final_title.startswith("http"):
             html_title = extract_title_from_html(html_content)
             if html_title:
                 final_title = html_title
         
         lat, lng = parse_coordinates(final_url, html_content)
-        print(f"🕵️ [DEBUG] HTML解析結果 -> 座標: {lat}, {lng}, 店名: {final_title}")
+        print(f"🕵️ [DEBUG] 解析結果 -> 座標: {lat}, {lng}, 店名: {final_title}")
 
-        # ★★★ V1.6 新增：如果店名還是廢話，但有座標，就問 OSM ★★★
+        # OSM 救援
         is_bad_name = (final_title == "未命名地點" or final_title.startswith("http") or "google" in final_title.lower())
-        
         if lat and lng and is_bad_name:
             osm_name = get_name_from_osm(lat, lng)
             if osm_name:
                 final_title = osm_name
                 print(f"🕵️ [DEBUG] OSM 救援成功，更新店名為: {final_title}")
-        # ----------------------------------------------------
         
         category = determine_category(final_title)
 
@@ -299,7 +306,8 @@ def handle_radar_task(user_lat, user_lng, user_id, reply_token):
                     ]
                 },
                 "footer": {
-                    "type": "box", "layout": "vertical",
+                    "type": "box",
+                    "layout": "vertical",
                     "contents": [{"type": "button", "style": "link", "height": "sm", "action": {"type": "uri", "label": "導航", "uri": nav_url}}]
                 }
             }
