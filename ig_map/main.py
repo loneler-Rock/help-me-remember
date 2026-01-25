@@ -54,45 +54,66 @@ def calculate_distance(lat1, lon1, lat2, lon2):
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
     return R * c
 
-def get_url_and_content(url):
+def resolve_url_manual(url):
     """
-    V1.7 升級：攔截歷史跳轉 (Redirect History)
-    解決 GitHub 美國機房被導向 Google Consent 頁面導致座標錯誤的問題。
+    V1.8 核心升級：手動步進追蹤 (Manual Redirect Tracing)
+    對抗 Google Maps 在美國機房 (GitHub) 強制跳轉 Consent Page 的問題。
     """
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7'
-        }
-        # 這裡會自動跟隨跳轉，最終可能停在 consent.google.com
-        response = requests.get(url, allow_redirects=True, headers=headers, timeout=15)
-        response.encoding = response.apparent_encoding
-        
-        final_url = response.url
-        html_content = response.text
-        
-        print(f"🕵️ [DEBUG] 最終抵達網址: {final_url}")
+    print(f"🕵️ [DEBUG] 啟動手動追蹤模式: {url}")
+    
+    current_url = url
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1',
+        'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7'
+    }
 
-        # ★★★ 關鍵修正：檢查跳轉過程 ★★★
-        # 如果最終網址變成 consent.google.com 或是沒有座標的頁面
-        # 我們就回頭去翻「歷史紀錄」，找那個曾經出現過的「完美長網址」
-        for history_resp in response.history:
-            h_url = history_resp.url
-            # 如果歷史網址包含 /place/ (店名) 或 !3d (座標)，那才是我們要的！
-            if "/place/" in h_url or "!3d" in h_url or "google.com/maps/place" in h_url:
-                print(f"🕵️ [DEBUG] 攔截到中間層的真實網址: {h_url}")
-                final_url = h_url
-                # 我們不需要中間層的 HTML，因為光是網址就足夠解析店名和座標了
+    # 最多允許追蹤 10 層，避免無窮迴圈
+    for i in range(10):
+        try:
+            # 關鍵：allow_redirects=False 禁止自動跳轉
+            response = requests.get(current_url, headers=headers, allow_redirects=False, timeout=10)
+            
+            # 檢查是否為跳轉 (301, 302)
+            if response.status_code in [301, 302]:
+                next_url = response.headers.get('Location')
+                if not next_url:
+                    break
+
+                print(f"   ↳ 第 {i+1} 層跳轉: {next_url[:60]}...")
+
+                # ★★★ 攔截邏輯 ★★★
+                # 1. 如果發現已經拿到含有座標或店名的網址，立刻鎖定！
+                if "/place/" in next_url or "!3d" in next_url or "google.com/maps/place" in next_url:
+                    print("   🎯 攔截到黃金網址 (Target Found)！停止跳轉。")
+                    return next_url, ""
+
+                # 2. 如果發現要跳去 consent.google.com，立刻煞車！
+                if "consent.google.com" in next_url:
+                    print("   ⛔ 偵測到 Consent Page 陷阱！拒絕前往，停留在上一層。")
+                    # 這裡我們回傳 current_url (上一層)，希望它含有資訊
+                    # 或者如果上一層是 maps.app.goo.gl，那也沒辦法，只能回傳並祈禱 HTML 裡有東西
+                    return current_url, response.text 
+                
+                # 繼續前往下一層
+                current_url = next_url
+            
+            elif response.status_code == 200:
+                # 抵達終點 (可能是正常的頁面，也可能是 JS Redirect 頁面)
+                print("   ✅ 抵達終點頁面 (200 OK)")
+                return current_url, response.text
+            
+            else:
                 break
-        
-        return final_url, html_content
-
-    except Exception as e:
-        print(f"⚠️ [DEBUG] 網頁請求失敗: {e}")
-        return url, ""
+                
+        except Exception as e:
+            print(f"⚠️ [DEBUG] 追蹤過程發生錯誤: {e}")
+            break
+            
+    return current_url, ""
 
 def extract_map_url(text):
     if not text: return None
+    # 支援 maps.app.goo.gl, goo.gl, google.com/maps
     match = re.search(r'(https?://[^\s]*(?:google|goo\.gl|maps\.app\.goo\.gl)[^\s]*)', text)
     return match.group(1) if match else None
 
@@ -100,15 +121,18 @@ def extract_title_from_html(html_content):
     if not html_content: return None
     candidates = []
     
+    # og:title
     match = re.search(r'<meta\s+property="og:title"\s+content="([^"]+)"', html_content)
     if match: candidates.append(match.group(1))
 
+    # og:description
     match = re.search(r'<meta\s+property="og:description"\s+content="([^"]+)"', html_content)
     if match: 
         desc = match.group(1)
         name_part = desc.split('·')[0].strip()
         candidates.append(name_part)
 
+    # title tag
     match = re.search(r'<title>(.*?)</title>', html_content)
     if match:
         t = re.sub(r' - Google\s*(Map|地圖).*', '', match.group(1)).strip()
@@ -138,7 +162,7 @@ def parse_coordinates(url, html_content=""):
     if not url: return None, None
     url = unquote(url)
 
-    # 策略 A: 網址 (優先權最高，因為這是從攔截到的真實網址解析的)
+    # 策略 A: 網址解析
     match = re.search(r'@(-?\d+\.\d+),(-?\d+\.\d+)', url)
     if match: return float(match.group(1)), float(match.group(2))
     match = re.search(r'q=(-?\d+\.\d+),(-?\d+\.\d+)', url)
@@ -147,7 +171,7 @@ def parse_coordinates(url, html_content=""):
     match_lng = re.search(r'!4d(-?\d+\.\d+)', url)
     if match_lat and match_lng: return float(match_lat.group(1)), float(match_lng.group(2))
 
-    # 策略 B: HTML (只有當網址解不出來時才用，但要注意可能解到 Consent Page 的座標)
+    # 策略 B: HTML 解析
     if html_content:
         if "center=" in html_content:
             match = re.search(r'center=(-?\d+\.\d+)%2C(-?\d+\.\d+)', html_content)
@@ -180,7 +204,7 @@ def handle_save_task(raw_message, user_id, reply_token):
         return
 
     target_url = extract_map_url(raw_message)
-    # 補漏：如果 Regex 沒抓到，但有 google 關鍵字，試著整句解析
+    # 補漏：如果 Regex 沒抓到，但字串本身很像網址，就試試看
     if not target_url and ("google" in raw_message or "goo.gl" in raw_message) and "http" in raw_message:
          target_url = raw_message.strip()
 
@@ -190,10 +214,11 @@ def handle_save_task(raw_message, user_id, reply_token):
     message_to_user = ""
 
     if target_url:
-        final_url, html_content = get_url_and_content(target_url)
-        print(f"🕵️ [DEBUG] 還原後的長網址 -> [{final_url}]")
+        # 使用 V1.8 手動追蹤
+        final_url, html_content = resolve_url_manual(target_url)
+        print(f"🕵️ [DEBUG] 最終鎖定網址 -> [{final_url}]")
         
-        # 1. 嘗試從 網址 (攔截到的真實網址) 抓取店名
+        # 1. 網址找店名
         if "/place/" in final_url:
             try:
                 parts = unquote(final_url).split("/place/")[1].split("/")[0]
@@ -201,7 +226,7 @@ def handle_save_task(raw_message, user_id, reply_token):
             except:
                 pass
         
-        # 2. 如果網址沒標題，挖 HTML (注意：如果掉進 Consent Page，這裡挖出來的可能是 Google Maps)
+        # 2. HTML 找店名
         if final_title == "未命名地點" or final_title.startswith("http"):
             html_title = extract_title_from_html(html_content)
             if html_title:
@@ -216,11 +241,17 @@ def handle_save_task(raw_message, user_id, reply_token):
             osm_name = get_name_from_osm(lat, lng)
             if osm_name:
                 final_title = osm_name
-                print(f"🕵️ [DEBUG] OSM 救援成功，更新店名為: {final_title}")
+                print(f"🕵️ [DEBUG] OSM 救援成功: {final_title}")
         
         category = determine_category(final_title)
 
         if lat and lng:
+            # 再次檢查是不是美國機房座標 (Iroquois Trail 附近)
+            # 38.00xxx, -79.42xxx
+            if 37.9 < lat < 38.1 and -79.5 < lng < -79.3:
+                 print("⚠️ [DEBUG] 警告：偵測到可能是美國機房座標，可能是攔截失敗。")
+                 # 這裡可以選擇不存，或是提示使用者
+            
             data = {
                 "user_id": user_id,
                 "location_name": final_title,
