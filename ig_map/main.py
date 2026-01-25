@@ -34,52 +34,35 @@ def reply_line(token, messages):
     except Exception as e:
         print(f"❌ LINE 回覆失敗: {e}")
 
-# --- 2. 輔助工具：OSM 與 文字檢查 ---
-
-def is_mostly_english(text):
-    """檢查字串是否大部分是英文"""
-    if not text: return False
-    # 移除常見符號，只看字母
-    clean_text = re.sub(r'[0-9\s,\.\-\(\)]', '', text)
-    if not clean_text: return False
-    
-    english_count = sum(1 for char in clean_text if 'a' <= char.lower() <= 'z')
-    return (english_count / len(clean_text)) > 0.5
+# --- 2. 輔助工具 ---
 
 def get_name_from_osm(lat, lng):
-    """強制向 OSM 查詢中文名稱"""
+    """OSM 救援 (僅作為最後備案)"""
     try:
-        print(f"🕵️ [DEBUG] 啟動 OSM 中文救援 -> {lat}, {lng}")
-        # addressdetails=1 確保有詳細資料，accept-language=zh-TW 強制要繁體中文
+        print(f"🕵️ [DEBUG] Google 無名，啟動 OSM 救援 -> {lat}, {lng}")
         url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lng}&zoom=18&addressdetails=1&accept-language=zh-TW"
-        headers = {'User-Agent': 'HelpMeRememberBot/2.1'}
+        headers = {'User-Agent': 'HelpMeRememberBot/2.2'}
         r = requests.get(url, headers=headers, timeout=10)
         data = r.json()
         
-        # 優先順序：店家名稱 > 地標名稱 > 顯示名稱的前段
-        if 'name' in data and data['name']:
-            return data['name']
-        
-        # 如果沒有 name，試試看能不能從 display_name 抓第一段 (通常是店名)
-        if 'display_name' in data:
-            return data['display_name'].split(',')[0]
-            
+        if 'name' in data and data['name']: return data['name']
+        if 'display_name' in data: return data['display_name'].split(',')[0]
         return None
     except Exception as e:
         print(f"⚠️ [DEBUG] OSM 查詢失敗: {e}")
         return None
 
-# --- 3. 瀏覽器爬蟲核心 (V2.1) ---
+# --- 3. 瀏覽器爬蟲核心 (V2.2) ---
 
 def get_real_url_with_browser(url):
-    print(f"🕵️ [DEBUG] 啟動 Chrome (V2.1 偽裝台灣人模式)... 目標: {url}")
+    print(f"🕵️ [DEBUG] 啟動 Chrome (V2.2 Google優先模式)... 目標: {url}")
     
     options = Options()
     options.add_argument("--headless")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
-    # 強制設定語系標頭
-    options.add_argument("--lang=zh-TW") 
+    # 強制設定 Accept-Language 標頭 (比 --lang 更有效)
+    options.add_experimental_option('prefs', {'intl.accept_languages': 'zh-TW,zh;q=0.9,en;q=0.8'})
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
 
     driver = None
@@ -90,17 +73,15 @@ def get_real_url_with_browser(url):
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=options)
         
-        # ★★★ 關鍵：使用 CDP 指令，欺騙 Google 我們在 台北101 ★★★
-        # 這樣 Google 就不會因為 IP 在美國而給英文
+        # 偽造 GPS：台北 (為了讓 Google 覺得我們是台灣人)
         params = {
             "latitude": 25.033964,
             "longitude": 121.564468,
             "accuracy": 100
         }
         driver.execute_cdp_cmd("Emulation.setGeolocationOverride", params)
-        print("   📍 已偽造 GPS 定位：台北")
 
-        # 開啟網址 (嘗試加入 hl=zh-TW 強制參數)
+        # 開啟網址 (帶上強制中文參數)
         if "?" in url:
             target_url = url + "&hl=zh-TW&gl=TW"
         else:
@@ -108,8 +89,8 @@ def get_real_url_with_browser(url):
             
         driver.get(target_url)
         
-        # 等待 (稍微久一點確保轉址完成)
-        print("   ⏳ 等待 Google Maps JS 執行 (6秒)...")
+        # 等待轉址
+        print("   ⏳ 等待頁面載入 (6秒)...")
         time.sleep(6)
         
         final_url = driver.current_url
@@ -165,42 +146,30 @@ def handle_save_task(raw_message, user_id, reply_token):
         reply_line(reply_token, [{"type": "text", "text": "📝 已存為純文字筆記。"}])
         return
 
-    # 1. 啟動瀏覽器爬蟲
+    # 1. 啟動瀏覽器
     final_url, page_title = get_real_url_with_browser(target_url)
     
     # 2. 解析座標
     lat, lng = parse_coordinates(final_url)
     
-    # 3. 處理店名 (初步清洗)
+    # 3. 處理店名
+    # 清洗掉 " - Google 地圖" 等字樣
     final_title = page_title.replace(" - Google 地圖", "").replace(" - Google Maps", "").strip()
     
-    # ★★★ V2.1 核心邏輯：中文救援機制 ★★★
-    # 條件：
-    # A. 標題是 "Google Maps" (沒抓到)
-    # B. 標題大部分是英文 (例如 "Countless Lu Wei") 且 座標在台灣範圍內
-    # C. 標題是 "未命名地點"
-    
-    is_taiwan = False
-    if lat and lng:
-        if 21.0 < lat < 26.0 and 119.0 < lng < 123.0: # 粗略的台灣範圍
-            is_taiwan = True
+    # 移除 "Google Maps" 這種無意義標題
+    if final_title == "Google Maps":
+        final_title = "未命名地點"
 
-    need_rescue = False
-    if not final_title or final_title == "Google Maps":
-        need_rescue = True
-    elif is_taiwan and is_mostly_english(final_title):
-        print(f"🕵️ [DEBUG] 偵測到台灣地點顯示為英文 ({final_title})，啟動 OSM 中文救援！")
-        need_rescue = True
-
-    if need_rescue and lat and lng:
+    # ★★★ V2.2 邏輯：Google 有給名字就用 Google 的，不要雞婆去問 OSM (除非完全沒名字) ★★★
+    if (not final_title or final_title == "未命名地點") and lat and lng:
+        print("⚠️ Google 未提供店名，嘗試 OSM 救援...")
         osm_name = get_name_from_osm(lat, lng)
         if osm_name:
-            print(f"✅ OSM 救援成功，將 '{final_title}' 修正為 -> '{osm_name}'")
             final_title = osm_name
-        else:
-            print("⚠️ OSM 也沒名字，維持原樣")
-
-    if not final_title: final_title = "未命名地點"
+            print(f"✅ OSM 救援成功: {final_title}")
+    
+    # 如果 Google 給了英文名 (Countless Lu Wei)，我們就接受它！
+    # 因為這代表這個座標真的是這家店，而不是隔壁的髮廊。
 
     print(f"🕵️ [DEBUG] 最終存檔資料 -> 座標: {lat}, {lng}, 店名: {final_title}")
 
