@@ -1,2 +1,5 @@
 requests
 supabase
+line-bot-sdk
+selenium
+webdriver-manager
