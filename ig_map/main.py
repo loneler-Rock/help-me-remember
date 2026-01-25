@@ -35,7 +35,19 @@ def reply_line(token, messages):
     except Exception as e:
         print(f"❌ LINE 回覆失敗: {e}")
 
-# --- 2. 輔助工具：OSM 雙重偵探 ---
+# --- 2. 輔助工具：重複檢查與 OSM ---
+
+def check_duplicate(user_id, location_name):
+    """檢查資料庫是否已有相同店名"""
+    try:
+        # 搜尋該使用者是否存過完全一樣的店名
+        response = supabase.table("map_spots").select("*").eq("user_id", user_id).eq("location_name", location_name).execute()
+        if response.data and len(response.data) > 0:
+            return response.data[0] # 回傳已存在的資料
+        return None
+    except Exception as e:
+        print(f"⚠️ 檢查重複失敗: {e}")
+        return None
 
 def parse_osm_category(data):
     if not data: return None
@@ -59,12 +71,15 @@ def parse_osm_category(data):
     sight_types = ['attraction', 'museum', 'viewpoint', 'artwork', 'gallery', 'zoo', 'theme_park', 'park', 'castle']
     if osm_category in ['tourism', 'historic', 'leisure', 'natural']: return "景點"
     
+    # OSM 的住宿判定
+    if osm_category == 'tourism' and osm_type in ['hotel', 'hostel', 'guest_house', 'motel', 'apartment']: return "住宿"
+    
     return None
 
 def get_osm_by_coordinate(lat, lng):
     try:
         url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lng}&zoom=18&addressdetails=1&accept-language=zh-TW"
-        headers = {'User-Agent': 'HelpMeRememberBot/2.6'}
+        headers = {'User-Agent': 'HelpMeRememberBot/2.7'}
         r = requests.get(url, headers=headers, timeout=5)
         return parse_osm_category(r.json())
     except:
@@ -75,7 +90,7 @@ def get_osm_by_name(name, lat, lng):
         viewbox = f"{lng-0.002},{lat-0.002},{lng+0.002},{lat+0.002}"
         print(f"🕵️ [DEBUG] 啟動 OSM 姓名偵探: 搜尋 '{name}'...")
         url = f"https://nominatim.openstreetmap.org/search?q={name}&format=json&viewbox={viewbox}&bounded=1&limit=1&accept-language=zh-TW"
-        headers = {'User-Agent': 'HelpMeRememberBot/2.6'}
+        headers = {'User-Agent': 'HelpMeRememberBot/2.7'}
         r = requests.get(url, headers=headers, timeout=5)
         data = r.json()
         if data:
@@ -86,42 +101,40 @@ def get_osm_by_name(name, lat, lng):
         return None
 
 def determine_category_smart(title, full_text, lat, lng):
-    """V2.6 鷹眼分類：全文掃描 + OSM"""
+    """V2.7 分類：新增住宿關鍵字"""
     
     print(f"🕵️ [DEBUG] 啟動關鍵字掃描 (全文長度: {len(full_text)} 字)...")
     
-    # 關鍵字庫 (越精準越好)
+    # 關鍵字庫
     food_keywords = ["餐廳", "咖啡", "Coffee", "Cafe", "麵", "飯", "食", "味", "餐酒館", "Bar", "甜點", "火鍋", "料理", "Bistro", "早午餐", "牛排", "壽司", "燒肉", "小吃", "早餐", "午餐", "晚餐", "食堂", "Tea", "飲", "冰", "滷味", "豆花", "炸雞", "烘焙", "居酒屋", "拉麵", "丼", "素食", "熟食", "攤", "店", "舖", "館", "菜", "肉", "湯"]
-    travel_keywords = ["車站", "公園", "山", "海", "寺", "廟", "博物館", "步道", "農場", "樂園", "展覽", "View", "Hotel", "民宿", "景點", "文創", "步道", "學校", "中心", "診所", "醫院", "教會", "宮", "殿", "古蹟", "老街", "夜市", "風景"]
-    
-    # 1. 優先檢查全文內容 (這就是螢幕上顯示的所有文字)
-    # 我們只檢查前 1000 個字，因為重要資訊通常在最上面
+    travel_keywords = ["車站", "公園", "山", "海", "寺", "廟", "博物館", "步道", "農場", "樂園", "展覽", "View", "景點", "文創", "步道", "學校", "中心", "診所", "醫院", "教會", "宮", "殿", "古蹟", "老街", "夜市", "風景"]
+    lodging_keywords = ["Hotel", "民宿", "飯店", "旅館", "酒店", "客棧", "旅店", "行館", "Resort", "住宿", "會館"]
+
     scan_text = (title + " " + full_text[:1000]).replace("\n", " ")
     
+    # 1. 關鍵字掃描
     for kw in food_keywords:
-        if kw in scan_text: 
-            print(f"   ✅ 全文關鍵字命中: {kw} -> 美食")
-            return "美食"
+        if kw in scan_text: return "美食"
+    for kw in lodging_keywords:
+        if kw in scan_text: return "住宿"
+    for kw in travel_keywords:
+        if kw in scan_text: return "景點"
 
-    # 2. 如果關鍵字沒中，問 OSM (名字優先)
+    # 2. OSM 名字偵探
     if title and title != "未命名地點":
         cat = get_osm_by_name(title, lat, lng)
         if cat: return cat
 
-    # 3. 問 OSM (座標優先)
+    # 3. OSM 座標偵探
     cat = get_osm_by_coordinate(lat, lng)
     if cat: return cat
-
-    # 4. 最後再檢查景點關鍵字 (避免誤判)
-    for kw in travel_keywords:
-        if kw in scan_text: return "景點"
         
     return "其它"
 
-# --- 3. 瀏覽器爬蟲 (V2.6 全文抓取版) ---
+# --- 3. 瀏覽器爬蟲 ---
 
 def get_real_url_with_browser(url):
-    print(f"🕵️ [DEBUG] 啟動 Chrome (V2.6 鷹眼版)... 目標: {url}")
+    print(f"🕵️ [DEBUG] 啟動 Chrome (V2.7)... 目標: {url}")
     
     options = Options()
     options.add_argument("--headless")
@@ -133,12 +146,13 @@ def get_real_url_with_browser(url):
     driver = None
     final_url = url
     page_title = ""
-    page_text = "" # V2.6 新增：整頁文字
+    page_text = ""
     
     try:
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=options)
         
+        # 偽造 GPS (台北)
         params = {"latitude": 25.033964, "longitude": 121.564468, "accuracy": 100}
         driver.execute_cdp_cmd("Emulation.setGeolocationOverride", params)
 
@@ -151,9 +165,6 @@ def get_real_url_with_browser(url):
         
         final_url = driver.current_url
         page_title = driver.title
-        
-        # ★★★ V2.6 殺手鐧：直接抓取 body 內的所有可見文字 ★★★
-        # 這會包含螢幕上顯示的「類別」、「地址」、「評論摘要」等等
         try:
             body_element = driver.find_element(By.TAG_NAME, "body")
             page_text = body_element.text
@@ -161,7 +172,6 @@ def get_real_url_with_browser(url):
             page_text = ""
                 
         print(f"   ✅ 標題: {page_title}")
-        # print(f"   ✅ 全文預覽: {page_text[:50]}...") # Debug用
         
     except Exception as e:
         print(f"⚠️ [DEBUG] 瀏覽器執行錯誤: {e}")
@@ -170,7 +180,7 @@ def get_real_url_with_browser(url):
             
     return final_url, page_title, page_text
 
-# --- 4. 解析與存檔 ---
+# --- 4. 主流程 ---
 
 def extract_map_url(text):
     if not text: return None
@@ -201,23 +211,31 @@ def handle_save_task(raw_message, user_id, reply_token):
         reply_line(reply_token, [{"type": "text", "text": "📝 已存為純文字筆記。"}])
         return
 
-    # 1. 瀏覽器抓取 (標題 + 全文)
+    # 1. 爬蟲
     final_url, page_title, page_text = get_real_url_with_browser(target_url)
     
-    # 2. 解析座標
+    # 2. 解析
     lat, lng = parse_coordinates(final_url)
-    
-    # 3. 處理店名
     final_title = page_title.replace(" - Google 地圖", "").replace(" - Google Maps", "").strip()
     if final_title == "Google Maps": final_title = "未命名地點"
 
-    # 4. 鷹眼分類 (傳入全文)
+    # 3. 分類
     category = determine_category_smart(final_title, page_text, lat, lng)
 
-    print(f"🕵️ [DEBUG] 最終存檔 -> 店名: {final_title} | 類別: {category}")
+    print(f"🕵️ [DEBUG] 準備存檔 -> 店名: {final_title} | 類別: {category}")
 
-    # 5. 存入資料庫
     if lat and lng:
+        # ★★★ V2.7 新功能：檢查是否重複 ★★★
+        existing_spot = check_duplicate(user_id, final_title)
+        
+        if existing_spot:
+            # 如果已經存在，就不存了，直接回覆
+            print(f"⚠️ [DEBUG] 發現重複資料，跳過寫入。")
+            msg = f"😅 這家店你存過囉！\n店名: {final_title}\n分類: {existing_spot.get('category', category)}"
+            reply_line(reply_token, [{"type": "text", "text": msg}])
+            return
+
+        # 不重複才寫入
         data = {
             "user_id": user_id,
             "location_name": final_title,
@@ -233,14 +251,4 @@ def handle_save_task(raw_message, user_id, reply_token):
             supabase.table("map_spots").insert(data).execute()
             print(f"✅ 成功寫入資料庫")
             reply_line(reply_token, [{"type": "text", "text": f"✅ 已收藏！\n店名: {final_title}\n分類: {category}"}])
-        except Exception as e:
-            print(f"❌ DB Error: {e}")
-    else:
-        print("⚠️ [DEBUG] 無法解析座標")
-        reply_line(reply_token, [{"type": "text", "text": "⚠️ 連結已接收，但無法解析座標。"}])
-
-if __name__ == "__main__":
-    if len(sys.argv) > 3:
-        handle_save_task(sys.argv[1], sys.argv[2], sys.argv[3])
-    else:
-        print("❌ 參數不足")
+        except Exception as
