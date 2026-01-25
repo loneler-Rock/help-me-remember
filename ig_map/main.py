@@ -18,7 +18,7 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 LINE_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
 
-# --- UI配色設定 (雷達模式用) ---
+# --- UI配色設定 ---
 CATEGORY_COLORS = {
     "美食": "#E67E22",  # 橘色
     "景點": "#27AE60",  # 綠色
@@ -82,7 +82,7 @@ def parse_osm_category(data):
 def get_osm_by_coordinate(lat, lng):
     try:
         url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lng}&zoom=18&addressdetails=1&accept-language=zh-TW"
-        headers = {'User-Agent': 'HelpMeRememberBot/2.9'}
+        headers = {'User-Agent': 'HelpMeRememberBot/3.0'}
         r = requests.get(url, headers=headers, timeout=5)
         return parse_osm_category(r.json())
     except:
@@ -93,7 +93,7 @@ def get_osm_by_name(name, lat, lng):
         viewbox = f"{lng-0.002},{lat-0.002},{lng+0.002},{lat+0.002}"
         print(f"🕵️ [DEBUG] 啟動 OSM 姓名偵探: 搜尋 '{name}'...")
         url = f"https://nominatim.openstreetmap.org/search?q={name}&format=json&viewbox={viewbox}&bounded=1&limit=1&accept-language=zh-TW"
-        headers = {'User-Agent': 'HelpMeRememberBot/2.9'}
+        headers = {'User-Agent': 'HelpMeRememberBot/3.0'}
         r = requests.get(url, headers=headers, timeout=5)
         data = r.json()
         if data:
@@ -128,7 +128,7 @@ def determine_category_smart(title, full_text, lat, lng):
         
     return "其它"
 
-# --- 3. 瀏覽器爬蟲 (V2.8 黃金版核心) ---
+# --- 3. 瀏覽器爬蟲 (V2.8 核心) ---
 
 def get_real_url_with_browser(url):
     print(f"🕵️ [DEBUG] 啟動 Chrome (V2.8)... 目標: {url}")
@@ -177,19 +177,25 @@ def get_real_url_with_browser(url):
             
     return final_url, page_title, page_text
 
-# --- 4. 雷達模式工具 (V2.9 新增) ---
+# --- 4. 雷達模式工具 (V3.0 美食獵人版) ---
 
-def get_nearby_spots(user_id, lat, lng, limit=10):
-    """從 Supabase 拉取資料並計算距離"""
+def get_nearby_spots(user_id, lat, lng, limit=10, target_category="美食"):
+    """從 Supabase 拉取資料，並只鎖定特定類別 (預設美食)"""
     try:
         # 抓取該使用者的所有地點
-        # (備註：若資料量破千筆，未來建議改用 PostGIS RPC)
         response = supabase.table("map_spots").select("*").eq("user_id", user_id).execute()
         spots = response.data
         
         results = []
         for spot in spots:
-            # 簡單的歐幾里得距離 (適用於小範圍比較)
+            # 1. 過濾類別
+            current_cat = spot.get('category', '其它')
+            
+            # 如果指定了類別 (如美食)，則只保留該類別
+            if target_category and current_cat != target_category:
+                continue
+
+            # 2. 計算距離
             s_lat = spot.get('latitude')
             s_lng = spot.get('longitude')
             if s_lat and s_lng:
@@ -197,7 +203,7 @@ def get_nearby_spots(user_id, lat, lng, limit=10):
                 spot['dist_score'] = dist
                 results.append(spot)
         
-        # 排序：距離由近到遠，取前 N 筆
+        # 排序：距離由近到遠
         results.sort(key=lambda x: x['dist_score'])
         return results[:limit]
     except Exception as e:
@@ -207,7 +213,7 @@ def get_nearby_spots(user_id, lat, lng, limit=10):
 def create_radar_flex(spots):
     """產生 LINE Flex Message Carousel JSON"""
     if not spots:
-        return {"type": "text", "text": "📭 附近沒有收藏的地點。\n試著多分享一些 Google Maps 連結給我吧！"}
+        return {"type": "text", "text": "🍜 哎呀！您的附近暫時沒有收藏的「美食」。\n\n快去 Google Maps 找些好吃的店分享給我吧！"}
 
     bubbles = []
     for spot in spots:
@@ -215,7 +221,6 @@ def create_radar_flex(spots):
         color = CATEGORY_COLORS.get(cat, "#7F8C8D")
         icon = CATEGORY_ICONS.get(cat, CATEGORY_ICONS["其它"])
         
-        # 預防舊資料沒有 google_map_url
         map_url = spot.get('google_map_url') or spot.get('address') or "https://maps.google.com"
 
         bubble = {
@@ -240,7 +245,7 @@ def create_radar_flex(spots):
                 "layout": "baseline",
                 "contents": [
                   {"type": "icon", "url": icon, "size": "xs"},
-                  {"type": "text", "text": "點擊查看", "size": "xs", "color": "#8c8c8c", "margin": "sm"}
+                  {"type": "text", "text": "距離最近", "size": "xs", "color": "#8c8c8c", "margin": "sm"}
                 ],
                 "margin": "md"
               }
@@ -254,7 +259,7 @@ def create_radar_flex(spots):
                 "type": "button",
                 "action": {
                   "type": "uri",
-                  "label": "導航",
+                  "label": "導航去吃",
                   "uri": map_url
                 },
                 "style": "primary",
@@ -265,19 +270,18 @@ def create_radar_flex(spots):
           }
         }
         bubbles.append(bubble)
-        # Flex Carousel 最多 12 張，保險起見取 10 張
         if len(bubbles) >= 10: break
 
     return {
         "type": "flex",
-        "altText": "📡 您的附近收藏清單",
+        "altText": "🍽️ 附近的口袋美食清單",
         "contents": {
             "type": "carousel",
             "contents": bubbles
         }
     }
 
-# --- 5. 任務處理 ---
+# --- 5. 任務處理主邏輯 ---
 
 def extract_map_url(text):
     if not text: return None
@@ -294,112 +298,3 @@ def parse_coordinates(url):
     match_lat = re.search(r'!3d(-?\d+\.\d+)', url)
     match_lng = re.search(r'!4d(-?\d+\.\d+)', url)
     if match_lat and match_lng: return float(match_lat.group(1)), float(match_lng.group(2))
-    return None, None
-
-def check_duplicate(user_id, location_name):
-    """檢查是否重複，回傳 ID"""
-    try:
-        response = supabase.table("map_spots").select("id").eq("user_id", user_id).eq("location_name", location_name).execute()
-        if response.data and len(response.data) > 0:
-            return response.data[0]['id']
-        return None
-    except:
-        return None
-
-# 存檔處理 (爬蟲)
-def handle_save_task(raw_message, user_id, reply_token):
-    print(f"📥 [存檔模式] 開始處理...")
-    
-    target_url = extract_map_url(raw_message)
-    if not target_url and ("google" in raw_message or "goo.gl" in raw_message) and "http" in raw_message:
-         target_url = raw_message.strip()
-
-    if not target_url:
-        print("⚠️ [DEBUG] 非地圖連結")
-        reply_line(reply_token, [{"type": "text", "text": "📝 已存為純文字筆記(尚未支援)。"}])
-        return
-
-    # 1. 爬蟲
-    final_url, page_title, page_text = get_real_url_with_browser(target_url)
-    
-    # 2. 解析
-    lat, lng = parse_coordinates(final_url)
-    final_title = page_title.replace(" - Google 地圖", "").replace(" - Google Maps", "").strip()
-    if final_title == "Google Maps": final_title = "未命名地點"
-
-    # 3. 分類
-    category = determine_category_smart(final_title, page_text, lat, lng)
-
-    print(f"🕵️ [DEBUG] 準備存檔 -> 店名: {final_title} | 類別: {category}")
-
-    if lat and lng:
-        existing_id = check_duplicate(user_id, final_title)
-        
-        data = {
-            "user_id": user_id,
-            "location_name": final_title,
-            "google_map_url": final_url,
-            "address": final_url,
-            "latitude": lat,
-            "longitude": lng,
-            "category": category,
-            "geom": f"POINT({lng} {lat})",
-            "created_at": "now()"
-        }
-
-        try:
-            if existing_id:
-                print(f"🔄 發現重複，執行靜默更新 (ID: {existing_id})")
-                supabase.table("map_spots").update(data).eq("id", existing_id).execute()
-            else:
-                print(f"✅ 新增資料")
-                supabase.table("map_spots").insert(data).execute()
-
-            reply_line(reply_token, [{"type": "text", "text": f"✅ 已收藏！\n店名: {final_title}\n分類: {category}"}])
-
-        except Exception as e:
-            print(f"❌ DB Error: {e}")
-            reply_line(reply_token, [{"type": "text", "text": "❌ 系統錯誤"}])
-    else:
-        print("⚠️ [DEBUG] 無法解析座標")
-        reply_line(reply_token, [{"type": "text", "text": "⚠️ 連結已接收，但無法解析座標。"}])
-
-# 雷達處理 (V2.9 新增)
-def handle_radar_task(lat_str, lng_str, user_id, reply_token):
-    print(f"📡 [雷達模式] 啟動... 中心點: {lat_str}, {lng_str}")
-    try:
-        lat = float(lat_str)
-        lng = float(lng_str)
-        
-        # 1. 查詢最近點
-        nearby_spots = get_nearby_spots(user_id, lat, lng)
-        
-        # 2. 產生 Flex Message
-        flex_message = create_radar_flex(nearby_spots)
-        
-        # 3. 回傳
-        reply_line(reply_token, [flex_message])
-        
-    except ValueError:
-        print("❌ 座標格式錯誤")
-        reply_line(reply_token, [{"type": "text", "text": "❌ 座標資料錯誤"}])
-
-# --- 主程式入口 ---
-if __name__ == "__main__":
-    # 接收參數: 1=Content(URL or Lat,Lng), 2=UserID, 3=ReplyToken
-    if len(sys.argv) > 3:
-        input_content = sys.argv[1]
-        user_id = sys.argv[2]
-        reply_token = sys.argv[3]
-        
-        # 判斷是「座標」還是「網址」
-        # 如果內容包含逗號，且兩邊都是數字，判定為座標 (由 Make 傳入)
-        if re.match(r'^-?\d+(\.\d+)?,-?\d+(\.\d+)?$', input_content.strip()):
-            # 分割座標
-            lat_str, lng_str = input_content.strip().split(',')
-            handle_radar_task(lat_str, lng_str, user_id, reply_token)
-        else:
-            # 預設為存檔任務
-            handle_save_task(input_content, user_id, reply_token)
-    else:
-        print("❌ 參數不足")
