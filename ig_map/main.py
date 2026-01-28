@@ -63,7 +63,7 @@ def parse_osm_category(data):
 def get_osm_by_coordinate(lat, lng):
     try:
         url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lng}&zoom=18&addressdetails=1&accept-language=zh-TW"
-        headers = {'User-Agent': 'ShunShunBot/4.4'}
+        headers = {'User-Agent': 'ShunShunBot/4.5'}
         r = requests.get(url, headers=headers, timeout=5)
         return parse_osm_category(r.json())
     except: return None
@@ -72,7 +72,7 @@ def get_osm_by_name(name, lat, lng):
     try:
         viewbox = f"{lng-0.002},{lat-0.002},{lng+0.002},{lat+0.002}"
         url = f"https://nominatim.openstreetmap.org/search?q={name}&format=json&viewbox={viewbox}&bounded=1&limit=1&accept-language=zh-TW"
-        headers = {'User-Agent': 'ShunShunBot/4.4'}
+        headers = {'User-Agent': 'ShunShunBot/4.5'}
         r = requests.get(url, headers=headers, timeout=5)
         data = r.json()
         if data: return parse_osm_category(data)
@@ -210,7 +210,7 @@ def create_radar_flex(spots, center_lat, center_lng, is_hotspot_mode=False):
         bubbles.append(bubble)
         if len(bubbles) >= 10: break
 
-    # 私藏模式下，顯示切換到「貓友熱點」的按鈕
+    # 切換按鈕
     if not is_hotspot_mode:
         switch_bubble = {
             "type": "bubble", "size": "micro",
@@ -229,10 +229,10 @@ def create_radar_flex(spots, center_lat, center_lng, is_hotspot_mode=False):
     title_text = "🔥 貓友們都吃這家" if is_hotspot_mode else "🐾 順順的私房筆記"
     return {"type": "flex", "altText": title_text, "contents": {"type": "carousel", "contents": bubbles}}
 
-# --- 5. 說明模式 ---
+# --- 5. 說明模式 (順順版文案) ---
 def handle_help_message(reply_token):
     help_text = (
-        "😺 **順順教學手冊** 😺\n\n"
+        "😺 **順順地圖使用手冊** 😺\n\n"
         "我是站長順順，專門幫你記下好吃的！\n\n"
         "👇 **【順順帶路】(左邊按鈕)**\n"
         "傳送位置給我，我會找出 **你** 存過的私房名單！\n\n"
@@ -251,7 +251,7 @@ def request_user_location(reply_token):
     }
     reply_line(reply_token, [msg])
 
-# --- 7. 主程式邏輯 ---
+# --- 7. 主程式邏輯 (修正判定邏輯) ---
 def extract_map_url(text):
     if not text: return None
     match = re.search(r'(https?://[^\s]*(?:google|goo\.gl|maps\.app\.goo\.gl)[^\s]*)', text)
@@ -327,18 +327,17 @@ if __name__ == "__main__":
                 handle_radar_task(lat_str, lng_str, user_id, reply_token, mode="hotspot")
             except: reply_line(reply_token, [{"type": "text", "text": "😿 熱點指令格式錯誤"}])
 
-        # 2. 偵測座標 (個人雷達)
+        # 2. 偵測座標
         elif re.match(r'^-?\d+(\.\d+)?,-?\d+(\.\d+)?$', input_content):
             lat_str, lng_str = input_content.split(',')
             handle_radar_task(lat_str, lng_str, user_id, reply_token, mode="personal")
         
-        # 3. ★★★ 偵測按鈕關鍵字 (包含您新的命名) ★★★
-        # 當收到 "順順帶路" 或 "貓友熱點" 時，都會觸發「要求位置」
-        elif input_content in ["雷達", "位置", "附近美食", "找餐廳", "順順", "順順帶路", "貓友熱點", "熱點"]:
+        # 3. 偵測功能按鈕 (請求位置) - 增加容錯
+        elif any(k in input_content for k in ["雷達", "位置", "附近美食", "找餐廳", "順順", "順順帶路", "貓友熱點", "熱點"]):
             request_user_location(reply_token)
 
-        # 4. 偵測說明
-        elif input_content in ["help", "說明", "教學", "你是誰", "順順教學"]:
+        # 4. 偵測說明 (順順教學) - 增加容錯
+        elif any(k in input_content for k in ["help", "說明", "教學", "你是誰", "順順教學"]):
             handle_help_message(reply_token)
             
         # 5. 存檔模式
