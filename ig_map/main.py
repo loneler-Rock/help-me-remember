@@ -20,9 +20,13 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 LINE_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
 
-# --- UI配色設定 ---
+# --- UI配色設定 (順順色票) ---
 CATEGORY_COLORS = {
-    "美食": "#E67E22", "景點": "#27AE60", "住宿": "#2980B9", "其它": "#7F8C8D", "熱點": "#E74C3C"
+    "美食": "#E67E22",  # 橘貓色
+    "景點": "#27AE60",  # 貓草綠
+    "住宿": "#2980B9",  # 睡墊藍
+    "其它": "#7F8C8D",  # 貓砂灰
+    "熱點": "#E74C3C"   # 紅色雷射筆
 }
 
 CATEGORY_ICONS = {
@@ -44,10 +48,12 @@ except Exception as e:
 def reply_line(token, messages):
     if not token: return
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"}
-    try: requests.post("https://api.line.me/v2/bot/message/reply", headers=headers, json={"replyToken": token, "messages": messages})
-    except Exception as e: print(f"❌ LINE 回覆失敗: {e}")
+    try:
+        requests.post("https://api.line.me/v2/bot/message/reply", headers=headers, json={"replyToken": token, "messages": messages})
+    except Exception as e:
+        print(f"❌ LINE 回覆失敗: {e}")
 
-# --- 2. 輔助工具 ---
+# --- 2. 輔助工具：OSM 與 分類 ---
 def parse_osm_category(data):
     if not data: return None
     item = data[0] if isinstance(data, list) and data else data
@@ -55,9 +61,11 @@ def parse_osm_category(data):
     osm_cat = item.get('category', '') or item.get('class', '')
     osm_type = item.get('type', '')
     if not osm_cat and 'addresstype' in item: osm_cat = item['addresstype']
+    
     food_types = ['restaurant', 'cafe', 'fast_food', 'food_court', 'bar', 'pub', 'ice_cream', 'biergarten', 'deli']
     if osm_cat == 'amenity' and osm_type in food_types: return "美食"
     if osm_cat == 'shop' and osm_type in ['food', 'bakery', 'pastry', 'beverage', 'coffee', 'tea', 'deli']: return "美食"
+    
     sight_types = ['attraction', 'museum', 'viewpoint', 'artwork', 'gallery', 'zoo', 'theme_park', 'park', 'castle']
     if osm_cat in ['tourism', 'historic', 'leisure', 'natural']: return "景點"
     if osm_cat == 'tourism' and osm_type in ['hotel', 'hostel', 'guest_house', 'motel', 'apartment']: return "住宿"
@@ -66,7 +74,7 @@ def parse_osm_category(data):
 def get_osm_by_coordinate(lat, lng):
     try:
         url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lng}&zoom=18&addressdetails=1&accept-language=zh-TW"
-        headers = {'User-Agent': 'ShunShunBot/4.2'}
+        headers = {'User-Agent': 'ShunShunBot/4.3'}
         r = requests.get(url, headers=headers, timeout=5)
         return parse_osm_category(r.json())
     except: return None
@@ -75,7 +83,7 @@ def get_osm_by_name(name, lat, lng):
     try:
         viewbox = f"{lng-0.002},{lat-0.002},{lng+0.002},{lat+0.002}"
         url = f"https://nominatim.openstreetmap.org/search?q={name}&format=json&viewbox={viewbox}&bounded=1&limit=1&accept-language=zh-TW"
-        headers = {'User-Agent': 'ShunShunBot/4.2'}
+        headers = {'User-Agent': 'ShunShunBot/4.3'}
         r = requests.get(url, headers=headers, timeout=5)
         data = r.json()
         if data: return parse_osm_category(data)
@@ -130,7 +138,7 @@ def get_real_url_with_browser(url):
         if driver: driver.quit()
     return final_url, page_title, page_text
 
-# --- 4. 雷達模式 (順順聰明版：含距離計算) ---
+# --- 4. 雷達模式 (含距離計算) ---
 
 def get_nearby_spots(user_id, lat, lng, limit=10, target_category="美食"):
     try:
@@ -141,10 +149,10 @@ def get_nearby_spots(user_id, lat, lng, limit=10, target_category="美食"):
             if target_category and spot.get('category', '其它') != target_category: continue
             s_lat, s_lng = spot.get('latitude'), spot.get('longitude')
             if s_lat and s_lng:
-                # 計算歐幾里得距離 (度)
+                # 計算距離 (概算)
                 degree_dist = math.sqrt((s_lat - lat)**2 + (s_lng - lng)**2)
                 spot['dist_score'] = degree_dist
-                # 粗略換算成公尺 (1度約=111km)
+                # 換算公尺
                 spot['dist_meters'] = int(degree_dist * 111 * 1000)
                 results.append(spot)
         results.sort(key=lambda x: x['dist_score'])
@@ -176,19 +184,18 @@ def create_radar_flex(spots, center_lat, center_lng, is_hotspot_mode=False):
         if is_hotspot_mode:
             name = spot['name']
             cat = "熱點"
-            # 熱點模式：顯示收藏人數
+            # 熱點顯示人數
             note = f"🔥 {spot['popularity']} 位貓友認證"
             map_url = spot['google_url'] or "http://maps.google.com"
         else:
             name = spot['location_name']
             cat = spot.get('category', '其它')
-            # ★★★ V4.2 修改重點：這裡改成顯示距離了！ ★★★
+            # 私藏顯示距離
             dist = spot.get('dist_meters', 0)
             if dist > 1000:
                 note = f"🐾 距離約 {round(dist/1000, 1)} km"
             else:
                 note = f"🐾 距離約 {dist} m"
-                
             map_url = spot.get('google_map_url') or spot.get('address')
 
         color = CATEGORY_COLORS.get(cat, "#7F8C8D")
@@ -209,7 +216,6 @@ def create_radar_flex(spots, center_lat, center_lng, is_hotspot_mode=False):
                 "type": "box", "layout": "baseline",
                 "contents": [
                   {"type": "icon", "url": icon, "size": "xs"},
-                  # 這裡會顯示「🐾 距離約 350 m」
                   {"type": "text", "text": note, "size": "xs", "color": "#8c8c8c", "margin": "sm"}
                 ], "margin": "md"
               }
@@ -225,6 +231,7 @@ def create_radar_flex(spots, center_lat, center_lng, is_hotspot_mode=False):
         bubbles.append(bubble)
         if len(bubbles) >= 10: break
 
+    # 私藏模式最後加一張「切換熱點」
     if not is_hotspot_mode:
         switch_bubble = {
             "type": "bubble", "size": "micro",
@@ -246,10 +253,22 @@ def create_radar_flex(spots, center_lat, center_lng, is_hotspot_mode=False):
         "type": "flex", "altText": title_text, "contents": {"type": "carousel", "contents": bubbles}
     }
 
-# --- 5. 其他任務 ---
-def handle_export_task(user_id, reply_token):
-    reply_line(reply_token, [{"type": "text", "text": "🚧 順順正在整理貓砂盆... 匯出功能維護中！"}])
+# --- 5. 說明模式 (順順版文案) ---
+def handle_help_message(reply_token):
+    help_text = (
+        "😺 **順順地圖使用手冊** 😺\n\n"
+        "我是站長順順，專門幫你記下好吃的！\n"
+        "請按照以下步驟餵食我：\n\n"
+        "👇 **怎麼存美食？**\n"
+        "在 Google Maps 看到想去的店，按「分享」並選擇傳給我，我就會收進口袋名單！\n\n"
+        "👇 **怎麼找美食？**\n"
+        "肚子餓時，點選單上的按鈕並傳送位置給我，我立刻帶你去吃！\n\n"
+        "💡 **小秘訣**\n"
+        "如果有存過這家店，我還會告訴你距離有多遠喔！🐾"
+    )
+    reply_line(reply_token, [{"type": "text", "text": help_text}])
 
+# --- 6. 喚醒位置工具 ---
 def request_user_location(reply_token):
     msg = {
         "type": "text", "text": "👇 奴才請按下面按鈕，告訴順順你在哪裡？",
@@ -319,15 +338,6 @@ def handle_radar_task(lat_str, lng_str, user_id, reply_token, mode="personal"):
     except ValueError:
         reply_line(reply_token, [{"type": "text", "text": "❌ 座標資料錯誤"}])
 
-def handle_help_message(reply_token):
-    help_text = (
-        "🐱 喵～我是站長「順順」！\n\n"
-        "1️⃣ **進貢罐罐**：傳連結給我存檔。\n"
-        "2️⃣ **召喚美食**：按雷達，我帶你去吃好料！\n"
-        "3️⃣ **偷看別家貓**：按熱點，看大家吃什麼！"
-    )
-    reply_line(reply_token, [{"type": "text", "text": help_text}])
-
 if __name__ == "__main__":
     if len(sys.argv) > 3:
         input_content = sys.argv[1].strip()
@@ -342,7 +352,8 @@ if __name__ == "__main__":
         elif re.match(r'^-?\d+(\.\d+)?,-?\d+(\.\d+)?$', input_content):
             lat_str, lng_str = input_content.split(',')
             handle_radar_task(lat_str, lng_str, user_id, reply_token, mode="personal")
-        elif input_content in ["雷達", "位置", "附近美食", "找餐廳", "順順"]:
+        elif input_content in ["雷達", "位置", "附近美食", "找餐廳", "順順", "熱點"]:
+            # ★ 重點：無論輸入雷達或熱點，都先叫出位置按鈕
             request_user_location(reply_token)
         elif input_content.lower() in ["help", "說明", "教學", "你是誰"]:
             handle_help_message(reply_token)
