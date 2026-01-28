@@ -84,7 +84,7 @@ def parse_osm_category(data):
 def get_osm_by_coordinate(lat, lng):
     try:
         url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lng}&zoom=18&addressdetails=1&accept-language=zh-TW"
-        headers = {'User-Agent': 'HelpMeRememberBot/3.1'}
+        headers = {'User-Agent': 'HelpMeRememberBot/3.2'}
         r = requests.get(url, headers=headers, timeout=5)
         return parse_osm_category(r.json())
     except:
@@ -95,7 +95,7 @@ def get_osm_by_name(name, lat, lng):
         viewbox = f"{lng-0.002},{lat-0.002},{lng+0.002},{lat+0.002}"
         print(f"🕵️ [DEBUG] 啟動 OSM 姓名偵探: 搜尋 '{name}'...")
         url = f"https://nominatim.openstreetmap.org/search?q={name}&format=json&viewbox={viewbox}&bounded=1&limit=1&accept-language=zh-TW"
-        headers = {'User-Agent': 'HelpMeRememberBot/3.1'}
+        headers = {'User-Agent': 'HelpMeRememberBot/3.2'}
         r = requests.get(url, headers=headers, timeout=5)
         data = r.json()
         if data:
@@ -274,11 +274,10 @@ def create_radar_flex(spots):
         }
     }
 
-# --- 5. 匯出模式 (V3.1 新增) ---
+# --- 5. 匯出模式 (V3.1) ---
 def handle_export_task(user_id, reply_token):
     print(f"📤 [匯出模式] 準備匯出 {user_id} 的資料...")
     try:
-        # 1. 抓取所有資料
         response = supabase.table("map_spots").select("*").eq("user_id", user_id).execute()
         spots = response.data
         
@@ -286,9 +285,7 @@ def handle_export_task(user_id, reply_token):
             reply_line(reply_token, [{"type": "text", "text": "📭 您的地圖還是空的，無法匯出。"}])
             return
 
-        # 2. 製作 CSV
         output = io.StringIO()
-        # 定義 CSV 欄位，這格式可以直接匯入 Google My Maps
         fieldnames = ['Name', 'Category', 'Address', 'Latitude', 'Longitude', 'GoogleMapURL']
         writer = csv.DictWriter(output, fieldnames=fieldnames)
         writer.writeheader()
@@ -304,16 +301,13 @@ def handle_export_task(user_id, reply_token):
             })
         
         csv_content = output.getvalue()
-        
-        # 3. 上傳到 file.io (一次性暫存)
-        # 這裡設定 14 天有效 (14d)，但下載一次後就會銷毀，保證隱私
         files = {'file': ('my_map.csv', csv_content)}
         r = requests.post('https://file.io/?expires=14d', files=files)
         
         if r.status_code == 200:
             link = r.json().get('link')
             reply_line(reply_token, [
-                {"type": "text", "text": f"✅ 匯出成功！\n\n這是一個一次性下載連結，請用電腦打開並下載 CSV 檔案：\n{link}\n\n💡 提示：您可以將此檔案匯入 Google Maps 的「我的地圖」功能。"}
+                {"type": "text", "text": f"✅ 匯出成功！\n\n這是一個一次性下載連結：\n{link}"}
             ])
         else:
             reply_line(reply_token, [{"type": "text", "text": "❌ 上傳失敗，請稍後再試。"}])
@@ -322,8 +316,28 @@ def handle_export_task(user_id, reply_token):
         print(f"❌ 匯出錯誤: {e}")
         reply_line(reply_token, [{"type": "text", "text": "❌ 系統發生錯誤。"}])
 
+# --- 6. 喚醒位置工具 (V3.2 新增) ---
+def request_user_location(reply_token):
+    """回傳一個帶有『開啟位置』按鈕的 Quick Reply"""
+    msg = {
+        "type": "text",
+        "text": "請點擊下方按鈕，把您的位置傳給我 👇",
+        "quickReply": {
+            "items": [
+                {
+                    "type": "action",
+                    "action": {
+                        "type": "location",
+                        "label": "📍 傳送目前位置"
+                    }
+                }
+            ]
+        }
+    }
+    reply_line(reply_token, [msg])
 
-# --- 6. 任務處理主邏輯 ---
+
+# --- 7. 任務處理主邏輯 ---
 
 def extract_map_url(text):
     if not text: return None
@@ -401,6 +415,17 @@ def handle_radar_task(lat_str, lng_str, user_id, reply_token):
     except ValueError:
         reply_line(reply_token, [{"type": "text", "text": "❌ 座標資料錯誤"}])
 
+# 說明模式
+def handle_help_message(reply_token):
+    help_text = (
+        "🗺️ 【幫我記】地圖管家功能介紹\n\n"
+        "📥 收藏地點：\n"
+        "直接分享 Google Maps 連結給我，我會自動分類並存檔。\n\n"
+        "📡 搜尋美食：\n"
+        "請在圖文選單點選「雷達」或直接傳送位置資訊，我會列出您附近收藏的美食清單！"
+    )
+    reply_line(reply_token, [{"type": "text", "text": help_text}])
+
 # --- 主程式入口 ---
 if __name__ == "__main__":
     if len(sys.argv) > 3:
@@ -413,11 +438,21 @@ if __name__ == "__main__":
             lat_str, lng_str = input_content.split(',')
             handle_radar_task(lat_str, lng_str, user_id, reply_token)
             
-        # 2. 匯出模式：檢查關鍵字
-        elif input_content.lower() in ["export", "匯出", "地圖匯出"]:
-            handle_export_task(user_id, reply_token)
+        # 2. 說明模式
+        elif input_content.lower() in ["help", "說明", "教學", "功能", "用法"]:
+            handle_help_message(reply_token)
+
+        # 3. 匯出模式
+        elif input_content.lower() in ["export", "匯出"]:
+             # handle_export_task(user_id, reply_token) # 如果想開啟匯出，請取消註解
+             reply_line(reply_token, [{"type": "text", "text": "🚧 匯出功能維護中。"}])
+
+        # 4. ★★★ 喚醒位置 (新增功能) ★★★
+        # 當使用者輸入 "雷達" 或 "位置" 時，回傳 Quick Reply 按鈕
+        elif input_content in ["雷達", "位置", "附近美食", "找餐廳"]:
+            request_user_location(reply_token)
             
-        # 3. 存檔模式：預設為網址處理
+        # 5. 存檔模式
         else:
             handle_save_task(input_content, user_id, reply_token)
     else:
