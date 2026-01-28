@@ -102,4 +102,247 @@ def get_real_url_with_browser(url):
     print(f"🕵️ [DEBUG] 順順正在聞這個網址... 目標: {url}")
     options = Options()
     options.add_argument("--headless")
-    options.add
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_experimental_option('prefs', {'intl.accept_languages': 'zh-TW,zh;q=0.9,en;q=0.8'})
+    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
+    driver = None
+    final_url = url
+    page_title = ""
+    page_text = ""
+    try:
+        service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=options)
+        params = {"latitude": 25.033964, "longitude": 121.564468, "accuracy": 100}
+        driver.execute_cdp_cmd("Emulation.setGeolocationOverride", params)
+        target_url = url + "&hl=zh-TW&gl=TW" if "?" in url else url + "?hl=zh-TW&gl=TW"
+        driver.get(target_url)
+        time.sleep(6)
+        final_url = driver.current_url
+        page_title = driver.title
+        try: page_text = driver.find_element(By.TAG_NAME, "body").text
+        except: page_text = ""
+    except Exception as e: print(f"⚠️ [DEBUG] 瀏覽器執行錯誤: {e}")
+    finally:
+        if driver: driver.quit()
+    return final_url, page_title, page_text
+
+# --- 4. 雷達模式 ---
+def get_nearby_spots(user_id, lat, lng, limit=10, target_category="美食"):
+    try:
+        response = supabase.table("map_spots").select("*").eq("user_id", user_id).execute()
+        spots = response.data
+        results = []
+        for spot in spots:
+            if target_category and spot.get('category', '其它') != target_category: continue
+            s_lat, s_lng = spot.get('latitude'), spot.get('longitude')
+            if s_lat and s_lng:
+                degree_dist = math.sqrt((s_lat - lat)**2 + (s_lng - lng)**2)
+                spot['dist_score'] = degree_dist
+                spot['dist_meters'] = int(degree_dist * 111 * 1000)
+                results.append(spot)
+        results.sort(key=lambda x: x['dist_score'])
+        return results[:limit]
+    except Exception as e:
+        print(f"❌ 雷達查詢失敗: {e}")
+        return []
+
+def get_hotspots_rpc(lat, lng):
+    try:
+        print(f"🔥 呼叫 RPC: get_hotspots, 中心: {lat}, {lng}")
+        response = supabase.rpc("get_hotspots", {"user_lat": lat, "user_lng": lng}).execute()
+        return response.data
+    except Exception as e:
+        print(f"❌ RPC 呼叫失敗: {e}")
+        return []
+
+def create_radar_flex(spots, center_lat, center_lng, is_hotspot_mode=False):
+    if not spots and not is_hotspot_mode:
+        return {"type": "text", "text": "😿 喵嗚... 附近的碗盤是空的。\n順順找不到您存過的店，試試看「貓友熱點」偷看別家貓咪吃什麼？"}
+    
+    if not spots and is_hotspot_mode:
+        return {"type": "text", "text": "❄️ 這裡冷冷清清...\n方圓 500 公尺內還沒有貓咪來踩點過，快當第一個開拓者吧！🐈"}
+
+    bubbles = []
+    for spot in spots:
+        if is_hotspot_mode:
+            name = spot['name']
+            cat = "熱點"
+            note = f"🔥 {spot['popularity']} 位貓友認證"
+            map_url = spot['google_url'] or "http://maps.google.com"
+        else:
+            name = spot['location_name']
+            cat = spot.get('category', '其它')
+            dist = spot.get('dist_meters', 0)
+            note = f"🐾 距離約 {round(dist/1000, 1)} km" if dist > 1000 else f"🐾 距離約 {dist} m"
+            map_url = spot.get('google_map_url') or spot.get('address')
+
+        color = CATEGORY_COLORS.get(cat, "#7F8C8D")
+        icon = CATEGORY_ICONS.get(cat, CATEGORY_ICONS["其它"])
+        
+        bubble = {
+          "type": "bubble", "size": "micro",
+          "header": {
+            "type": "box", "layout": "vertical",
+            "contents": [{"type": "text", "text": cat, "color": "#ffffff", "size": "xs", "weight": "bold"}],
+            "backgroundColor": color, "paddingAll": "sm"
+          },
+          "body": {
+            "type": "box", "layout": "vertical",
+            "contents": [
+              {"type": "text", "text": name, "weight": "bold", "size": "sm", "wrap": True},
+              {
+                "type": "box", "layout": "baseline",
+                "contents": [
+                  {"type": "icon", "url": icon, "size": "xs"},
+                  {"type": "text", "text": note, "size": "xs", "color": "#8c8c8c", "margin": "sm"}
+                ], "margin": "md"
+              }
+            ]
+          },
+          "footer": {
+            "type": "box", "layout": "vertical",
+            "contents": [
+              {"type": "button", "action": {"type": "uri", "label": "🐾 跟著順順走", "uri": map_url}, "style": "primary", "color": color, "height": "sm"}
+            ]
+          }
+        }
+        bubbles.append(bubble)
+        if len(bubbles) >= 10: break
+
+    # 切換按鈕
+    if not is_hotspot_mode:
+        switch_bubble = {
+            "type": "bubble", "size": "micro",
+            "body": {
+                "type": "box", "layout": "vertical", "justifyContent": "center", "height": "150px",
+                "contents": [
+                    {"type": "text", "text": "別家貓咪\n都吃什麼？", "align": "center", "weight": "bold", "wrap": True},
+                    {"type": "button", 
+                     "action": {"type": "message", "label": "🐟 貓友熱點", "text": f"熱點 {center_lat},{center_lng}"}, 
+                     "style": "secondary", "margin": "md"}
+                ]
+            }
+        }
+        bubbles.append(switch_bubble)
+
+    title_text = "🔥 貓友們都吃這家" if is_hotspot_mode else "🐾 順順的私房筆記"
+    return {"type": "flex", "altText": title_text, "contents": {"type": "carousel", "contents": bubbles}}
+
+# --- 5. 說明模式 (順順版文案) ---
+def handle_help_message(reply_token):
+    help_text = (
+        "😺 **順順地圖使用手冊** 😺\n\n"
+        "我是站長順順，專門幫你記下好吃的！\n\n"
+        "👇 **【順順帶路】(右邊按鈕)**\n"
+        "傳送位置給我，我會找出 **你** 存過的私房名單！\n\n"
+        "👇 **【貓友熱點】(中間按鈕)**\n"
+        "傳送位置給我，我會找出 **大家** 都在吃的熱門店！\n\n"
+        "👇 **【怎麼存檔？】**\n"
+        "直接把 Google Maps 連結分享給我，我就會收進筆記本囉！🐾"
+    )
+    reply_line(reply_token, [{"type": "text", "text": help_text}])
+
+# --- 6. 喚醒位置工具 ---
+def request_user_location(reply_token):
+    msg = {
+        "type": "text", "text": "👇 奴才請按下面按鈕，告訴順順你在哪裡？",
+        "quickReply": {"items": [{"type": "action", "action": {"type": "location", "label": "📍 傳送位置給順順"}}]}
+    }
+    reply_line(reply_token, [msg])
+
+# --- 7. 主程式邏輯 (V4.6 修正順序版) ---
+def extract_map_url(text):
+    if not text: return None
+    match = re.search(r'(https?://[^\s]*(?:google|goo\.gl|maps\.app\.goo\.gl)[^\s]*)', text)
+    return match.group(1) if match else None
+
+def parse_coordinates(url):
+    if not url: return None, None
+    url = unquote(url)
+    match = re.search(r'@(-?\d+\.\d+),(-?\d+\.\d+)', url)
+    if match: return float(match.group(1)), float(match.group(2))
+    match = re.search(r'search/(-?\d+\.\d+),(-?\d+\.\d+)', url)
+    if match: return float(match.group(1)), float(match.group(2))
+    match_lat = re.search(r'!3d(-?\d+\.\d+)', url)
+    match_lng = re.search(r'!4d(-?\d+\.\d+)', url)
+    if match_lat and match_lng: return float(match_lat.group(1)), float(match_lng.group(2))
+    return None, None
+
+def check_duplicate(user_id, location_name):
+    try:
+        response = supabase.table("map_spots").select("id").eq("user_id", user_id).eq("location_name", location_name).execute()
+        if response.data: return response.data[0]['id']
+        return None
+    except: return None
+
+def handle_save_task(raw_message, user_id, reply_token):
+    print(f"📥 [存檔模式] 順順收到罐罐了...")
+    target_url = extract_map_url(raw_message)
+    if not target_url and ("google" in raw_message or "goo.gl" in raw_message) and "http" in raw_message: target_url = raw_message.strip()
+    if not target_url:
+        reply_line(reply_token, [{"type": "text", "text": "😿 這是什麼？順順只吃 Google Maps 的連結喔！\n\n(如果是想找餐廳，請按【順順帶路】或【貓友熱點】)"}])
+        return
+    final_url, page_title, page_text = get_real_url_with_browser(target_url)
+    lat, lng = parse_coordinates(final_url)
+    final_title = page_title.replace(" - Google 地圖", "").replace(" - Google Maps", "").strip()
+    if final_title == "Google Maps": final_title = "未命名地點"
+    category = determine_category_smart(final_title, page_text, lat, lng)
+    if lat and lng:
+        existing_id = check_duplicate(user_id, final_title)
+        data = {"user_id": user_id, "location_name": final_title, "google_map_url": final_url, "address": final_url, "latitude": lat, "longitude": lng, "category": category, "geom": f"POINT({lng} {lat})", "created_at": "now()"}
+        try:
+            if existing_id: supabase.table("map_spots").update(data).eq("id", existing_id).execute()
+            else: supabase.table("map_spots").insert(data).execute()
+            reply_line(reply_token, [{"type": "text", "text": f"🐾 順順幫你記好了！\n\n📍 {final_title}\n🏷️ 分類：{category}\n\n已放入秘密基地，隨時可以召喚！"}])
+        except Exception as e: reply_line(reply_token, [{"type": "text", "text": "😿 系統吃壞肚子了 (Error)"}])
+    else: reply_line(reply_token, [{"type": "text", "text": "😿 順順聞不到這個地點的味道 (無法解析座標)。"}])
+
+def handle_radar_task(lat_str, lng_str, user_id, reply_token, mode="personal"):
+    print(f"📡 [雷達模式: {mode}] 順順開始偵測... 中心: {lat_str}, {lng_str}")
+    try:
+        lat = float(lat_str)
+        lng = float(lng_str)
+        if mode == "hotspot":
+            spots = get_hotspots_rpc(lat, lng)
+            flex_msg = create_radar_flex(spots, lat, lng, is_hotspot_mode=True)
+        else:
+            spots = get_nearby_spots(user_id, lat, lng, limit=10, target_category="美食")
+            flex_msg = create_radar_flex(spots, lat, lng, is_hotspot_mode=False)
+        reply_line(reply_token, [flex_msg])
+    except ValueError:
+        reply_line(reply_token, [{"type": "text", "text": "❌ 座標資料錯誤"}])
+
+if __name__ == "__main__":
+    if len(sys.argv) > 3:
+        input_content = sys.argv[1].strip()
+        user_id = sys.argv[2]
+        reply_token = sys.argv[3]
+        
+        # 1. 偵測熱點指令
+        if input_content.startswith("熱點 "):
+            try:
+                coords = input_content.split(" ")[1]
+                lat_str, lng_str = coords.split(',')
+                handle_radar_task(lat_str, lng_str, user_id, reply_token, mode="hotspot")
+            except: reply_line(reply_token, [{"type": "text", "text": "😿 熱點指令格式錯誤"}])
+
+        # 2. 偵測座標
+        elif re.match(r'^-?\d+(\.\d+)?,-?\d+(\.\d+)?$', input_content):
+            lat_str, lng_str = input_content.split(',')
+            handle_radar_task(lat_str, lng_str, user_id, reply_token, mode="personal")
+        
+        # ★★★ 3. (優先) 偵測說明/教學 ★★★
+        # (一定要放在 4. 之前，不然 "順順教學" 會被 "順順" 攔截！)
+        elif any(k in input_content for k in ["help", "說明", "教學", "你是誰", "順順教學"]):
+            handle_help_message(reply_token)
+
+        # 4. 偵測功能按鈕 (請求位置)
+        elif any(k in input_content for k in ["雷達", "位置", "附近美食", "找餐廳", "順順", "順順帶路", "貓友熱點", "熱點"]):
+            request_user_location(reply_token)
+            
+        # 5. 存檔模式
+        else:
+            handle_save_task(input_content, user_id, reply_token)
+    else:
+        print("❌ 參數不足")
