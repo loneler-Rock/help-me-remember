@@ -1,5 +1,6 @@
 import os
 import sys
+import time  # ★ 補上這行了！
 import re
 import requests
 import json
