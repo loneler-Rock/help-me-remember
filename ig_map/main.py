@@ -63,7 +63,7 @@ def parse_osm_category(data):
 def get_osm_by_coordinate(lat, lng):
     try:
         url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lng}&zoom=18&addressdetails=1&accept-language=zh-TW"
-        headers = {'User-Agent': 'ShunShunBot/4.6'}
+        headers = {'User-Agent': 'ShunShunBot/4.7'}
         r = requests.get(url, headers=headers, timeout=5)
         return parse_osm_category(r.json())
     except: return None
@@ -72,7 +72,7 @@ def get_osm_by_name(name, lat, lng):
     try:
         viewbox = f"{lng-0.002},{lat-0.002},{lng+0.002},{lat+0.002}"
         url = f"https://nominatim.openstreetmap.org/search?q={name}&format=json&viewbox={viewbox}&bounded=1&limit=1&accept-language=zh-TW"
-        headers = {'User-Agent': 'ShunShunBot/4.6'}
+        headers = {'User-Agent': 'ShunShunBot/4.7'}
         r = requests.get(url, headers=headers, timeout=5)
         data = r.json()
         if data: return parse_osm_category(data)
@@ -96,36 +96,6 @@ def determine_category_smart(title, full_text, lat, lng):
     cat = get_osm_by_coordinate(lat, lng)
     if cat: return cat
     return "其它"
-
-# --- 3. 瀏覽器爬蟲 ---
-def get_real_url_with_browser(url):
-    print(f"🕵️ [DEBUG] 順順正在聞這個網址... 目標: {url}")
-    options = Options()
-    options.add_argument("--headless")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_experimental_option('prefs', {'intl.accept_languages': 'zh-TW,zh;q=0.9,en;q=0.8'})
-    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
-    driver = None
-    final_url = url
-    page_title = ""
-    page_text = ""
-    try:
-        service = Service(ChromeDriverManager().install())
-        driver = webdriver.Chrome(service=service, options=options)
-        params = {"latitude": 25.033964, "longitude": 121.564468, "accuracy": 100}
-        driver.execute_cdp_cmd("Emulation.setGeolocationOverride", params)
-        target_url = url + "&hl=zh-TW&gl=TW" if "?" in url else url + "?hl=zh-TW&gl=TW"
-        driver.get(target_url)
-        time.sleep(6)
-        final_url = driver.current_url
-        page_title = driver.title
-        try: page_text = driver.find_element(By.TAG_NAME, "body").text
-        except: page_text = ""
-    except Exception as e: print(f"⚠️ [DEBUG] 瀏覽器執行錯誤: {e}")
-    finally:
-        if driver: driver.quit()
-    return final_url, page_title, page_text
 
 # --- 4. 雷達模式 ---
 def get_nearby_spots(user_id, lat, lng, limit=10, target_category="美食"):
@@ -210,7 +180,6 @@ def create_radar_flex(spots, center_lat, center_lng, is_hotspot_mode=False):
         bubbles.append(bubble)
         if len(bubbles) >= 10: break
 
-    # 切換按鈕
     if not is_hotspot_mode:
         switch_bubble = {
             "type": "bubble", "size": "micro",
@@ -229,7 +198,7 @@ def create_radar_flex(spots, center_lat, center_lng, is_hotspot_mode=False):
     title_text = "🔥 貓友們都吃這家" if is_hotspot_mode else "🐾 順順的私房筆記"
     return {"type": "flex", "altText": title_text, "contents": {"type": "carousel", "contents": bubbles}}
 
-# --- 5. 說明模式 (順順版文案) ---
+# --- 5. 說明模式 ---
 def handle_help_message(reply_token):
     help_text = (
         "😺 **順順地圖使用手冊** 😺\n\n"
@@ -251,7 +220,7 @@ def request_user_location(reply_token):
     }
     reply_line(reply_token, [msg])
 
-# --- 7. 主程式邏輯 (V4.6 修正順序版) ---
+# --- 7. 主程式邏輯 (V4.7 絕對優先版) ---
 def extract_map_url(text):
     if not text: return None
     match = re.search(r'(https?://[^\s]*(?:google|goo\.gl|maps\.app\.goo\.gl)[^\s]*)', text)
@@ -319,29 +288,30 @@ if __name__ == "__main__":
         user_id = sys.argv[2]
         reply_token = sys.argv[3]
         
-        # 1. 偵測熱點指令
-        if input_content.startswith("熱點 "):
+        # ★★★ 1. 強制優先偵測「教學/說明」 ★★★
+        # 只要文字裡包含「教學」或「說明」，不管有沒有其他字，立刻啟動說明模式
+        if "教學" in input_content or "說明" in input_content or "help" in input_content.lower():
+            handle_help_message(reply_token)
+
+        # 2. 偵測熱點指令 (熱點 25.03,121.56)
+        elif input_content.startswith("熱點 "):
             try:
                 coords = input_content.split(" ")[1]
                 lat_str, lng_str = coords.split(',')
                 handle_radar_task(lat_str, lng_str, user_id, reply_token, mode="hotspot")
             except: reply_line(reply_token, [{"type": "text", "text": "😿 熱點指令格式錯誤"}])
 
-        # 2. 偵測座標
+        # 3. 偵測座標 (傳送位置時)
         elif re.match(r'^-?\d+(\.\d+)?,-?\d+(\.\d+)?$', input_content):
             lat_str, lng_str = input_content.split(',')
             handle_radar_task(lat_str, lng_str, user_id, reply_token, mode="personal")
         
-        # ★★★ 3. (優先) 偵測說明/教學 ★★★
-        # (一定要放在 4. 之前，不然 "順順教學" 會被 "順順" 攔截！)
-        elif any(k in input_content for k in ["help", "說明", "教學", "你是誰", "順順教學"]):
-            handle_help_message(reply_token)
-
-        # 4. 偵測功能按鈕 (請求位置)
-        elif any(k in input_content for k in ["雷達", "位置", "附近美食", "找餐廳", "順順", "順順帶路", "貓友熱點", "熱點"]):
+        # 4. 偵測功能按鈕 (順順帶路、貓友熱點)
+        # 只要不是上面那幾種狀況，且包含關鍵字，就跳出位置按鈕
+        elif any(k in input_content for k in ["雷達", "位置", "附近美食", "找餐廳", "順順", "帶路", "貓友", "熱點"]):
             request_user_location(reply_token)
             
-        # 5. 存檔模式
+        # 5. 最後才試著當作網址存檔
         else:
             handle_save_task(input_content, user_id, reply_token)
     else:
