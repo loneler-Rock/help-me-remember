@@ -17,14 +17,10 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 LINE_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
 
-# V5.0 新增 "廣告" 金色
+# V5.0: 新增廣告色(金)與圖示(皇冠)
 CATEGORY_COLORS = {
-    "美食": "#E67E22", 
-    "景點": "#27AE60", 
-    "住宿": "#2980B9", 
-    "其它": "#7F8C8D", 
-    "熱點": "#E74C3C", 
-    "廣告": "#D4AF37"  # 金色 (Gold)
+    "美食": "#E67E22", "景點": "#27AE60", "住宿": "#2980B9", 
+    "其它": "#7F8C8D", "熱點": "#E74C3C", "廣告": "#D4AF37"
 }
 
 CATEGORY_ICONS = {
@@ -33,7 +29,7 @@ CATEGORY_ICONS = {
     "住宿": "https://cdn-icons-png.flaticon.com/512/2983/2983803.png",
     "其它": "https://cdn-icons-png.flaticon.com/512/447/447031.png",
     "熱點": "https://cdn-icons-png.flaticon.com/512/785/785116.png",
-    "廣告": "https://cdn-icons-png.flaticon.com/512/2549/2549860.png" # 皇冠圖示
+    "廣告": "https://cdn-icons-png.flaticon.com/512/2549/2549860.png"
 }
 
 try:
@@ -169,13 +165,13 @@ def create_radar_flex(spots, center_lat, center_lng, is_hotspot_mode=False):
         if is_hotspot_mode:
             name = spot['name']
             
-            # ★★★ V5.0 廣告判斷邏輯 ★★★
+            # ★ V5.0 廣告判斷 ★
             ad_priority = spot.get('ad_priority', 0)
             if ad_priority > 0:
                 is_ad = True
-                cat = "廣告" # 用來抓金色配色
+                cat = "廣告"
                 note = "👑 順順嚴選・人氣推薦"
-                name = f"👑 {name}" # 標題也加皇冠
+                name = f"👑 {name}"
             else:
                 cat = "熱點"
                 note = f"🔥 {spot['popularity']} 位貓友認證"
@@ -188,11 +184,8 @@ def create_radar_flex(spots, center_lat, center_lng, is_hotspot_mode=False):
             note = f"🐾 距離約 {round(dist/1000, 1)} km" if dist > 1000 else f"🐾 距離約 {dist} m"
             map_url = spot.get('google_map_url') or spot.get('address')
 
-        # 如果是廣告，用特殊的顏色和圖示
         color = CATEGORY_COLORS.get(cat, "#7F8C8D")
         icon = CATEGORY_ICONS.get(cat, CATEGORY_ICONS["其它"])
-        
-        # 廣告卡片的字體稍微大一點，背景醒目一點
         bg_color = color if not is_ad else "#F1C40F" 
 
         bubble = {
@@ -225,7 +218,7 @@ def create_radar_flex(spots, center_lat, center_lng, is_hotspot_mode=False):
         bubbles.append(bubble)
         if len(bubbles) >= 10: break
 
-    # 私藏模式才顯示切換按鈕 (V4.9 精簡版邏輯)
+    # 私藏模式才顯示切換按鈕
     if not is_hotspot_mode:
         switch_bubble = {
             "type": "bubble", "size": "micro",
@@ -329,4 +322,33 @@ def handle_radar_task(lat_str, lng_str, user_id, reply_token, mode="personal"):
 if __name__ == "__main__":
     if len(sys.argv) > 3:
         try:
-            raw_input =
+            # 處理可能來自 Make 組合的 lat,long
+            raw_input = sys.argv[1].strip()
+            input_content = raw_input
+        except:
+            input_content = ""
+            
+        user_id = sys.argv[2]
+        reply_token = sys.argv[3]
+
+        if "教學" in input_content or "說明" in input_content or "help" in input_content.lower():
+            handle_help_message(reply_token)
+
+        elif input_content.startswith("熱點 "):
+            try:
+                coords = input_content.split(" ")[1]
+                lat_str, lng_str = coords.split(',')
+                handle_radar_task(lat_str, lng_str, user_id, reply_token, mode="hotspot")
+            except: reply_line(reply_token, [{"type": "text", "text": "😿 熱點指令格式錯誤"}])
+
+        elif re.match(r'^-?\d+(\.\d+)?,-?\d+(\.\d+)?$', input_content):
+            lat_str, lng_str = input_content.split(',')
+            handle_radar_task(lat_str, lng_str, user_id, reply_token, mode="personal")
+
+        elif any(k in input_content for k in ["雷達", "位置", "附近美食", "找餐廳", "順順", "帶路", "貓友", "熱點"]):
+            request_user_location(reply_token)
+
+        else:
+            handle_save_task(input_content, user_id, reply_token)
+    else:
+        print("❌ 參數不足")
