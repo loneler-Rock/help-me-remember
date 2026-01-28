@@ -20,21 +20,22 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 LINE_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
 
-# --- UI配色設定 ---
+# --- UI配色設定 (順順特別挑選版) ---
 CATEGORY_COLORS = {
-    "美食": "#E67E22",
-    "景點": "#27AE60",
-    "住宿": "#2980B9",
-    "其它": "#7F8C8D",
-    "熱點": "#E74C3C"  # 熱點專用紅色
+    "美食": "#E67E22",  # 橘貓色 (好吃)
+    "景點": "#27AE60",  # 貓草綠 (好玩)
+    "住宿": "#2980B9",  # 睡墊藍 (好睡)
+    "其它": "#7F8C8D",  # 貓砂灰
+    "熱點": "#E74C3C"   # 紅外線雷射筆 (大家都在追)
 }
 
+# 若想換成貓咪圖示，可在此更換 URL
 CATEGORY_ICONS = {
     "美食": "https://cdn-icons-png.flaticon.com/512/706/706164.png",
     "景點": "https://cdn-icons-png.flaticon.com/512/2664/2664531.png",
     "住宿": "https://cdn-icons-png.flaticon.com/512/2983/2983803.png",
     "其它": "https://cdn-icons-png.flaticon.com/512/447/447031.png",
-    "熱點": "https://cdn-icons-png.flaticon.com/512/785/785116.png" # 火焰圖示
+    "熱點": "https://cdn-icons-png.flaticon.com/512/785/785116.png"
 }
 
 try:
@@ -56,9 +57,6 @@ def reply_line(token, messages):
         print(f"❌ LINE 回覆失敗: {e}")
 
 # --- 2. 輔助工具：OSM 與 分類 ---
-# (為了節省篇幅，此區塊邏輯與 V3.2 相同，在此省略重複定義，請保留原本的分類函式)
-# 但為了讓您可以直接複製全選，我還是完整列出：
-
 def parse_osm_category(data):
     if not data: return None
     if isinstance(data, list):
@@ -70,9 +68,12 @@ def parse_osm_category(data):
     osm_type = item.get('type', '')
     if not osm_category and 'addresstype' in item:
         osm_category = item['addresstype']
+    
+    # 這裡稍微放寬判定，確保貓咪能找到更多吃的
     food_types = ['restaurant', 'cafe', 'fast_food', 'food_court', 'bar', 'pub', 'ice_cream', 'biergarten', 'deli']
     if osm_category == 'amenity' and osm_type in food_types: return "美食"
     if osm_category == 'shop' and osm_type in ['food', 'bakery', 'pastry', 'beverage', 'coffee', 'tea', 'deli']: return "美食"
+    
     sight_types = ['attraction', 'museum', 'viewpoint', 'artwork', 'gallery', 'zoo', 'theme_park', 'park', 'castle']
     if osm_category in ['tourism', 'historic', 'leisure', 'natural']: return "景點"
     if osm_category == 'tourism' and osm_type in ['hotel', 'hostel', 'guest_house', 'motel', 'apartment']: return "住宿"
@@ -81,7 +82,7 @@ def parse_osm_category(data):
 def get_osm_by_coordinate(lat, lng):
     try:
         url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lng}&zoom=18&addressdetails=1&accept-language=zh-TW"
-        headers = {'User-Agent': 'HelpMeRememberBot/4.0'}
+        headers = {'User-Agent': 'ShunShunBot/4.1'}
         r = requests.get(url, headers=headers, timeout=5)
         return parse_osm_category(r.json())
     except: return None
@@ -90,7 +91,7 @@ def get_osm_by_name(name, lat, lng):
     try:
         viewbox = f"{lng-0.002},{lat-0.002},{lng+0.002},{lat+0.002}"
         url = f"https://nominatim.openstreetmap.org/search?q={name}&format=json&viewbox={viewbox}&bounded=1&limit=1&accept-language=zh-TW"
-        headers = {'User-Agent': 'HelpMeRememberBot/4.0'}
+        headers = {'User-Agent': 'ShunShunBot/4.1'}
         r = requests.get(url, headers=headers, timeout=5)
         data = r.json()
         if data: return parse_osm_category(data)
@@ -117,7 +118,7 @@ def determine_category_smart(title, full_text, lat, lng):
 
 # --- 3. 瀏覽器爬蟲 ---
 def get_real_url_with_browser(url):
-    print(f"🕵️ [DEBUG] 啟動 Chrome (V2.8)... 目標: {url}")
+    print(f"🕵️ [DEBUG] 順順正在聞這個網址... 目標: {url}")
     options = Options()
     options.add_argument("--headless")
     options.add_argument("--no-sandbox")
@@ -145,10 +146,9 @@ def get_real_url_with_browser(url):
         if driver: driver.quit()
     return final_url, page_title, page_text
 
-# --- 4. 雷達模式 (包含私藏與社群熱點) ---
+# --- 4. 雷達模式 (順順特別版) ---
 
 def get_nearby_spots(user_id, lat, lng, limit=10, target_category="美食"):
-    """V3.0: 抓取個人私藏"""
     try:
         response = supabase.table("map_spots").select("*").eq("user_id", user_id).execute()
         spots = response.data
@@ -166,10 +166,8 @@ def get_nearby_spots(user_id, lat, lng, limit=10, target_category="美食"):
         return []
 
 def get_hotspots_rpc(lat, lng):
-    """V4.0: 呼叫 Supabase RPC 抓取社群熱點"""
     try:
         print(f"🔥 呼叫 RPC: get_hotspots, 中心: {lat}, {lng}")
-        # ★★★ 這裡就是您問的 RPC 呼叫指令 ★★★
         response = supabase.rpc("get_hotspots", {
             "user_lat": lat, 
             "user_lng": lng
@@ -180,30 +178,27 @@ def get_hotspots_rpc(lat, lng):
         return []
 
 def create_radar_flex(spots, center_lat, center_lng, is_hotspot_mode=False):
-    """產生 Flex Message (共用版)"""
+    """產生 Flex Message (順順貓咪版)"""
     
-    # 如果是私藏模式沒資料
+    # 私藏模式沒資料
     if not spots and not is_hotspot_mode:
-        return {"type": "text", "text": "🍜 您的附近沒有私藏美食。\n試試看「熱點」功能，找找別人推薦的店？"}
+        return {"type": "text", "text": "😿 喵嗚... 附近的碗盤是空的。\n順順找不到您存過的店，試試看「搜熱點」偷看別家貓咪吃什麼？"}
     
-    # 如果是熱點模式沒資料
+    # 熱點模式沒資料
     if not spots and is_hotspot_mode:
-        return {"type": "text", "text": "🥶 方圓 500 公尺內還沒有「熱門」美食 (尚未有人收藏)。\n\n快當第一個開拓者吧！"}
+        return {"type": "text", "text": "❄️ 這裡冷冷清清...\n方圓 500 公尺內還沒有貓咪來踩點過，快當第一個開拓者吧！🐈"}
 
     bubbles = []
     for spot in spots:
-        # 判斷欄位來源 (RPC 回傳的欄位名稱可能不同)
         if is_hotspot_mode:
-            # RPC 回傳: name, popularity, google_url, dist_meters
             name = spot['name']
             cat = "熱點"
-            note = f"🔥 {spot['popularity']} 人收藏"
+            note = f"🔥 {spot['popularity']} 位貓友認證"
             map_url = spot['google_url'] or "http://maps.google.com"
         else:
-            # 一般回傳
             name = spot['location_name']
             cat = spot.get('category', '其它')
-            note = "距離最近"
+            note = "順順幫你記過"
             map_url = spot.get('google_map_url') or spot.get('address')
 
         color = CATEGORY_COLORS.get(cat, "#7F8C8D")
@@ -232,26 +227,26 @@ def create_radar_flex(spots, center_lat, center_lng, is_hotspot_mode=False):
           "footer": {
             "type": "box", "layout": "vertical",
             "contents": [
-              {"type": "button", "action": {"type": "uri", "label": "導航", "uri": map_url}, "style": "primary", "color": color, "height": "sm"}
+              {"type": "button", "action": {"type": "uri", "label": "🐾 跟著順順走", "uri": map_url}, "style": "primary", "color": color, "height": "sm"}
             ]
           }
         }
         bubbles.append(bubble)
         if len(bubbles) >= 10: break
 
-    # ★★★ V4.0 新增：如果是私藏模式，在最後多加一張「切換熱點」的按鈕卡片 ★★★
+    # 結尾卡片：切換模式
     if not is_hotspot_mode:
         switch_bubble = {
             "type": "bubble", "size": "micro",
             "body": {
                 "type": "box", "layout": "vertical", "justifyContent": "center", "height": "150px",
                 "contents": [
-                    {"type": "text", "text": "想知道大家\n都吃什麼？", "align": "center", "weight": "bold", "wrap": True},
+                    {"type": "text", "text": "別家貓咪\n都吃什麼？", "align": "center", "weight": "bold", "wrap": True},
                     {"type": "button", 
                      "action": {
                         "type": "message", 
-                        "label": "🔥 搜熱點", 
-                        "text": f"熱點 {center_lat},{center_lng}" # 這裡藏了魔法指令
+                        "label": "🐟 偷看大家吃啥", 
+                        "text": f"熱點 {center_lat},{center_lng}" # 保持指令格式，但按鈕文字變可愛
                      }, 
                      "style": "secondary", "margin": "md"}
                 ]
@@ -259,7 +254,7 @@ def create_radar_flex(spots, center_lat, center_lng, is_hotspot_mode=False):
         }
         bubbles.append(switch_bubble)
 
-    title_text = "🔥 500m 熱門美食榜" if is_hotspot_mode else "🍽️ 您的私藏美食"
+    title_text = "🔥 隔壁貓咪都吃這家" if is_hotspot_mode else "🐾 順順的私房筆記"
 
     return {
         "type": "flex",
@@ -267,21 +262,19 @@ def create_radar_flex(spots, center_lat, center_lng, is_hotspot_mode=False):
         "contents": {"type": "carousel", "contents": bubbles}
     }
 
-# --- 5. 匯出模式 (V3.1) ---
+# --- 5. 匯出模式 (暫時關閉) ---
 def handle_export_task(user_id, reply_token):
-    # (同上，省略以節省篇幅)
-    reply_line(reply_token, [{"type": "text", "text": "🚧 匯出功能維護中。"}])
+    reply_line(reply_token, [{"type": "text", "text": "🚧 順順正在整理貓砂盆... 匯出功能維護中！"}])
 
-# --- 6. 喚醒位置工具 (V3.2) ---
+# --- 6. 喚醒位置工具 ---
 def request_user_location(reply_token):
     msg = {
-        "type": "text", "text": "請點擊下方按鈕，把您的位置傳給我 👇",
-        "quickReply": {"items": [{"type": "action", "action": {"type": "location", "label": "📍 傳送目前位置"}}]}
+        "type": "text", "text": "👇 奴才請按下面按鈕，告訴順順你在哪裡？",
+        "quickReply": {"items": [{"type": "action", "action": {"type": "location", "label": "📍 傳送位置給順順"}}]}
     }
     reply_line(reply_token, [msg])
 
 # --- 7. 任務處理主邏輯 ---
-# (extract_map_url, parse_coordinates, check_duplicate, handle_save_task 保持不變)
 def extract_map_url(text):
     if not text: return None
     match = re.search(r'(https?://[^\s]*(?:google|goo\.gl|maps\.app\.goo\.gl)[^\s]*)', text)
@@ -307,11 +300,11 @@ def check_duplicate(user_id, location_name):
     except: return None
 
 def handle_save_task(raw_message, user_id, reply_token):
-    print(f"📥 [存檔模式] 開始處理...")
+    print(f"📥 [存檔模式] 順順收到罐罐了...")
     target_url = extract_map_url(raw_message)
     if not target_url and ("google" in raw_message or "goo.gl" in raw_message) and "http" in raw_message: target_url = raw_message.strip()
     if not target_url:
-        reply_line(reply_token, [{"type": "text", "text": "📝 已存為純文字筆記(尚未支援)。"}])
+        reply_line(reply_token, [{"type": "text", "text": "😿 這是什麼？順順只吃 Google Maps 的連結喔！"}])
         return
     final_url, page_title, page_text = get_real_url_with_browser(target_url)
     lat, lng = parse_coordinates(final_url)
@@ -324,29 +317,41 @@ def handle_save_task(raw_message, user_id, reply_token):
         try:
             if existing_id: supabase.table("map_spots").update(data).eq("id", existing_id).execute()
             else: supabase.table("map_spots").insert(data).execute()
-            reply_line(reply_token, [{"type": "text", "text": f"✅ 已收藏！\n店名: {final_title}\n分類: {category}"}])
-        except Exception as e: reply_line(reply_token, [{"type": "text", "text": "❌ 系統錯誤"}])
-    else: reply_line(reply_token, [{"type": "text", "text": "⚠️ 連結已接收，但無法解析座標。"}])
+            # 成功存檔的貓咪語錄
+            reply_line(reply_token, [{"type": "text", "text": f"🐾 順順幫你記好了！\n\n📍 {final_title}\n🏷️ 分類：{category}\n\n已放入秘密基地，隨時可以召喚！"}])
+        except Exception as e: reply_line(reply_token, [{"type": "text", "text": "😿 系統吃壞肚子了 (Error)"}])
+    else: reply_line(reply_token, [{"type": "text", "text": "😿 順順聞不到這個地點的味道 (無法解析座標)。"}])
 
-# --- 雷達模式 (整合版) ---
 def handle_radar_task(lat_str, lng_str, user_id, reply_token, mode="personal"):
-    print(f"📡 [雷達模式: {mode}] 啟動... 中心: {lat_str}, {lng_str}")
+    print(f"📡 [雷達模式: {mode}] 順順開始偵測... 中心: {lat_str}, {lng_str}")
     try:
         lat = float(lat_str)
         lng = float(lng_str)
         
         if mode == "hotspot":
-            # 呼叫 RPC
             spots = get_hotspots_rpc(lat, lng)
             flex_msg = create_radar_flex(spots, lat, lng, is_hotspot_mode=True)
         else:
-            # 呼叫一般查詢
             spots = get_nearby_spots(user_id, lat, lng, limit=10, target_category="美食")
             flex_msg = create_radar_flex(spots, lat, lng, is_hotspot_mode=False)
             
         reply_line(reply_token, [flex_msg])
     except ValueError:
         reply_line(reply_token, [{"type": "text", "text": "❌ 座標資料錯誤"}])
+
+# 說明模式 (順順自我介紹)
+def handle_help_message(reply_token):
+    help_text = (
+        "🐱 喵～我是站長「順順」！\n\n"
+        "我可以幫奴才做這些事：\n"
+        "1️⃣ **進貢罐罐 (存檔)**\n"
+        "把 Google Maps 連結丟給我，我就會收進秘密筆記本。\n\n"
+        "2️⃣ **召喚美食 (雷達)**\n"
+        "按選單的「雷達」告訴我你在哪，我會帶你去吃好料！\n\n"
+        "3️⃣ **偷看別家貓 (熱點)**\n"
+        "還可以偷看附近大家都去哪裡吃喔！🐟"
+    )
+    reply_line(reply_token, [{"type": "text", "text": help_text}])
 
 # --- 主程式入口 ---
 if __name__ == "__main__":
@@ -355,25 +360,24 @@ if __name__ == "__main__":
         user_id = sys.argv[2]
         reply_token = sys.argv[3]
         
-        # 1. 偵測是否為「熱點指令」 (格式: 熱點 25.03,121.56)
         if input_content.startswith("熱點 "):
             try:
                 coords = input_content.split(" ")[1]
                 lat_str, lng_str = coords.split(',')
                 handle_radar_task(lat_str, lng_str, user_id, reply_token, mode="hotspot")
             except:
-                reply_line(reply_token, [{"type": "text", "text": "❌ 熱點指令格式錯誤"}])
+                reply_line(reply_token, [{"type": "text", "text": "😿 熱點指令格式錯誤"}])
 
-        # 2. 一般雷達模式 (單純座標)
         elif re.match(r'^-?\d+(\.\d+)?,-?\d+(\.\d+)?$', input_content):
             lat_str, lng_str = input_content.split(',')
             handle_radar_task(lat_str, lng_str, user_id, reply_token, mode="personal")
             
-        # 3. 關鍵字喚醒
-        elif input_content in ["雷達", "位置", "附近美食", "找餐廳"]:
+        elif input_content in ["雷達", "位置", "附近美食", "找餐廳", "順順"]:
             request_user_location(reply_token)
 
-        # 4. 其他 (存檔)
+        elif input_content.lower() in ["help", "說明", "教學", "功能", "用法", "你是誰"]:
+            handle_help_message(reply_token)
+
         else:
             handle_save_task(input_content, user_id, reply_token)
     else:
