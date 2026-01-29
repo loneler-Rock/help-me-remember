@@ -45,7 +45,6 @@ def update_user_state(user_id, mode, category):
     try:
         data = {"user_id": user_id, "last_mode": mode, "last_category": category, "updated_at": "now()"}
         supabase.table("user_states").upsert(data).execute()
-        print(f"🧠 [記憶] {user_id}: {mode}/{category}")
     except Exception as e: print(f"❌ 記憶失敗: {e}")
 
 def get_user_state(user_id):
@@ -55,7 +54,7 @@ def get_user_state(user_id):
     except: pass
     return {"last_mode": "personal", "last_category": "美食"}
 
-# --- 核心搜尋邏輯 ---
+# --- 搜尋核心 ---
 def get_nearby_spots(user_id, lat, lng, limit=10, target_category="美食"):
     try:
         response = supabase.table("map_spots").select("*").eq("user_id", user_id).execute()
@@ -83,10 +82,8 @@ def get_hotspots_rpc(lat, lng, target_category=None):
 
 def create_radar_flex(spots, center_lat, center_lng, mode="personal", category="美食"):
     title_text = f"🐾 順順的{category}筆記" if mode == "personal" else f"🔥 熱門{category}"
-    
     if not spots:
-        msg = f"😿 喵嗚... 附近找不到「{category}」耶。"
-        return {"type": "text", "text": msg}
+        return {"type": "text", "text": f"😿 附近找不到{category}耶... (目前模式: {mode})"}
 
     bubbles = []
     for spot in spots:
@@ -95,149 +92,76 @@ def create_radar_flex(spots, center_lat, center_lng, mode="personal", category="
             name = spot['name']
             ad_priority = spot.get('ad_priority', 0)
             if ad_priority > 0:
-                is_ad = True
-                cat = "廣告"
-                note = "👑 順順嚴選・人氣推薦"
-                name = f"👑 {name}"
+                is_ad = True; cat = "廣告"; note = "👑 順順嚴選"; name = f"👑 {name}"
             else:
-                cat = "熱點"
-                note = f"🔥 {spot['popularity']} 位貓友認證"
-            map_url = spot['google_url'] or "http://maps.google.com"
+                cat = "熱點"; note = f"🔥 {spot['popularity']} 人氣"
+            map_url = spot['google_url'] or "http://google.com"
         else:
-            name = spot['location_name']
-            cat = spot.get('category', '其它')
+            name = spot['location_name']; cat = spot.get('category', '其它')
             dist = spot.get('dist_meters', 0)
-            note = f"🐾 距離約 {round(dist/1000, 1)} km" if dist > 1000 else f"🐾 距離約 {dist} m"
+            note = f"🐾 距離 {dist} m"
             map_url = spot.get('google_map_url') or spot.get('address')
 
         color = CATEGORY_COLORS.get(cat, "#7F8C8D")
-        icon = CATEGORY_ICONS.get(cat, CATEGORY_ICONS["其它"])
-        bg_color = color if not is_ad else "#F1C40F" 
-
+        bg_color = color if not is_ad else "#F1C40F"
+        
         bubble = {
           "type": "bubble", "size": "micro",
-          "header": {
-            "type": "box", "layout": "vertical",
-            "contents": [{"type": "text", "text": "順順嚴選" if is_ad else cat, "color": "#ffffff", "size": "xs", "weight": "bold"}],
-            "backgroundColor": bg_color, "paddingAll": "sm"
-          },
-          "body": {
-            "type": "box", "layout": "vertical",
-            "contents": [
-              {"type": "text", "text": name, "weight": "bold", "size": "sm", "wrap": True, "color": "#E67E22" if is_ad else "#000000"},
-              {
-                "type": "box", "layout": "baseline",
-                "contents": [
-                  {"type": "icon", "url": icon, "size": "xs"},
-                  {"type": "text", "text": note, "size": "xs", "color": "#D35400" if is_ad else "#8c8c8c", "margin": "sm", "weight": "bold" if is_ad else "regular"}
-                ], "margin": "md"
-              }
-            ]
-          },
-          "footer": {
-            "type": "box", "layout": "vertical",
-            "contents": [
-              {"type": "button", "action": {"type": "uri", "label": "👑 立即前往" if is_ad else "🐾 跟著順順走", "uri": map_url}, "style": "primary", "color": bg_color, "height": "sm"}
-            ]
-          }
+          "header": {"type": "box", "layout": "vertical", "contents": [{"type": "text", "text": "嚴選" if is_ad else cat, "color": "#ffffff", "size": "xs", "weight": "bold"}], "backgroundColor": bg_color, "paddingAll": "sm"},
+          "body": {"type": "box", "layout": "vertical", "contents": [{"type": "text", "text": name, "weight": "bold", "size": "sm", "wrap": True}, {"type": "text", "text": note, "size": "xs", "color": "#8c8c8c"}]},
+          "footer": {"type": "box", "layout": "vertical", "contents": [{"type": "button", "action": {"type": "uri", "label": "前往", "uri": map_url}, "style": "primary", "color": bg_color, "height": "sm"}]}
         }
         bubbles.append(bubble)
         if len(bubbles) >= 10: break
-
-    switch_bubble = {
-        "type": "bubble", "size": "micro",
-        "body": {
-            "type": "box", "layout": "vertical", "justifyContent": "center", "height": "160px",
-            "contents": [
-                 {"type": "text", "text": "換個口味？", "align": "center", "weight": "bold"},
-                 {"type": "button", "action": {"type": "message", "label": "🔥 看看熱點" if mode == "personal" else "🐾 回看私藏", "text": f"熱點 {category} {center_lat},{center_lng}" if mode == "personal" else f"{center_lat},{center_lng}"}, "style": "secondary", "margin": "md"}
-            ]
-        }
-    }
-    bubbles.append(switch_bubble)
+    
     return {"type": "flex", "altText": title_text, "contents": {"type": "carousel", "contents": bubbles}}
-
-def handle_help_message(reply_token):
-    help_text = "😺 **順順地圖 V6.0** 😺\n\n👇 **【私藏系列】**\n找你自己存過的美食、景點、住宿。\n\n👇 **【熱門系列】**\n看看大家都在哪裡排隊！\n\n👇 **【怎麼存檔？】**\n分享 Google Maps 連結給我即可！(這會稍微慢一點喔🐾)"
-    reply_line(reply_token, [{"type": "text", "text": help_text}])
 
 def request_user_location(reply_token, text_hint):
     msg = {"type": "text", "text": f"👇 {text_hint}", "quickReply": {"items": [{"type": "action", "action": {"type": "location", "label": "📍 傳送位置"}}]}}
     reply_line(reply_token, [msg])
 
-# --- Flask Web Server 入口 ---
+# --- 主要入口 ---
 @app.route('/', methods=['POST'])
 def callback():
     data = request.json
-    # 接收 Make 傳來的資料
     message_text = data.get("message_text", "")
     user_id = data.get("user_id", "")
     reply_token = data.get("reply_token", "")
     
     if not message_text: return "OK", 200
 
-    print(f"🚀 [快腦] 收到指令: {message_text}")
+    print(f"🚀 [指令] {message_text}")
 
-    # 1. 說明書
-    if "教學" in message_text or "說明" in message_text or "help" in message_text.lower():
-        handle_help_message(reply_token)
+    # ★ 1. 對應舊按鈕：順順教學
+    if "教學" in message_text or "說明" in message_text:
+        reply_line(reply_token, [{"type": "text", "text": "😺 我是順順！\n按【順順帶路】找你存的店\n按【貓友熱點】看大家去的店\n分享 Google Maps 連結給我可以存檔喔！"}])
 
-    # 2. 設定狀態指令
-    elif message_text == "找美食":
+    # ★ 2. 對應舊按鈕：順順帶路 (預設找私藏美食)
+    elif "順順帶路" in message_text or "帶路" in message_text:
         update_user_state(user_id, "personal", "美食")
-        request_user_location(reply_token, "想吃什麼？傳送位置給順順！")
-    elif message_text == "找景點":
-        update_user_state(user_id, "personal", "景點")
-        request_user_location(reply_token, "想去哪玩？傳送位置給順順！")
-    elif message_text == "找住宿":
-        update_user_state(user_id, "personal", "住宿")
-        request_user_location(reply_token, "今晚住哪？傳送位置給順順！")
-    elif "熱點" in message_text and "美食" in message_text:
+        request_user_location(reply_token, "要去哪裡？(私藏模式)")
+
+    # ★ 3. 對應舊按鈕：貓友熱點 (預設找熱門美食)
+    elif "貓友熱點" in message_text or "熱點" in message_text:
         update_user_state(user_id, "hotspot", "美食")
-        request_user_location(reply_token, "搜尋熱門美食中... 請傳送位置！")
-    elif "熱點" in message_text and "景點" in message_text:
-        update_user_state(user_id, "hotspot", "景點")
-        request_user_location(reply_token, "搜尋熱門景點中... 請傳送位置！")
+        request_user_location(reply_token, "看看大家去哪？(熱點模式)")
 
-    # 3. 執行雷達 (熱點帶參數)
-    elif message_text.startswith("熱點 "):
-        parts = message_text.split(" ")
-        if len(parts) >= 3 and "," in parts[-1]:
-            cat = parts[1]
-            coords = parts[2]
-            try:
-                lat_str, lng_str = coords.split(',')
-                lat = float(lat_str)
-                lng = float(lng_str)
-                spots = get_hotspots_rpc(lat, lng, target_category=cat)
-                flex_msg = create_radar_flex(spots, lat, lng, mode="hotspot", category=cat)
-                reply_line(reply_token, [flex_msg])
-            except: pass
-
-    # 4. 執行雷達 (純座標)
+    # ★ 4. 接收座標 (會去讀上面的設定)
     elif re.match(r'^-?\d+(\.\d+)?,-?\d+(\.\d+)?$', message_text):
         try:
-            lat_str, lng_str = message_text.split(',')
-            lat = float(lat_str)
-            lng = float(lng_str)
-            
+            lat, lng = map(float, message_text.split(','))
             state = get_user_state(user_id)
+            # 讀取剛剛按鈕設定的模式
             mode = state.get("last_mode", "personal")
             category = state.get("last_category", "美食")
             
             if mode == "hotspot":
                 spots = get_hotspots_rpc(lat, lng, target_category=category)
-                flex_msg = create_radar_flex(spots, lat, lng, mode="hotspot", category=category)
             else:
                 spots = get_nearby_spots(user_id, lat, lng, limit=10, target_category=category)
-                flex_msg = create_radar_flex(spots, lat, lng, mode="personal", category=category)
             
-            reply_line(reply_token, [flex_msg])
+            reply_line(reply_token, [create_radar_flex(spots, lat, lng, mode, category)])
         except: pass
-
-    # 5. 其他關鍵字
-    elif any(k in message_text for k in ["雷達", "位置", "順順", "帶路"]):
-        request_user_location(reply_token, "告訴順順你在哪裡？")
 
     return "OK", 200
 
