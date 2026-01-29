@@ -1,5 +1,7 @@
+flask
+gunicorn
 requests
 supabase
-line-bot-sdk
 selenium
 webdriver-manager
+urllib3
