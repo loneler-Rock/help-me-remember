@@ -132,26 +132,32 @@ def callback():
 
     print(f"🚀 [指令] {message_text}")
 
-    # ★ 1. 對應舊按鈕：順順教學
+    # 1. 教學
     if "教學" in message_text or "說明" in message_text:
         reply_line(reply_token, [{"type": "text", "text": "😺 我是順順！\n按【順順帶路】找你存的店\n按【貓友熱點】看大家去的店\n分享 Google Maps 連結給我可以存檔喔！"}])
 
-    # ★ 2. 對應舊按鈕：順順帶路 (預設找私藏美食)
+    # 2. 順順帶路
     elif "順順帶路" in message_text or "帶路" in message_text:
         update_user_state(user_id, "personal", "美食")
         request_user_location(reply_token, "要去哪裡？(私藏模式)")
 
-    # ★ 3. 對應舊按鈕：貓友熱點 (預設找熱門美食)
+    # 3. 貓友熱點
     elif "貓友熱點" in message_text or "熱點" in message_text:
         update_user_state(user_id, "hotspot", "美食")
         request_user_location(reply_token, "看看大家去哪？(熱點模式)")
 
-    # ★ 4. 接收座標 (會去讀上面的設定)
-    elif re.match(r'^-?\d+(\.\d+)?,-?\d+(\.\d+)?$', message_text):
+    # ★ 4. 接收座標 (改用防呆判斷)
+    elif "," in message_text:
         try:
-            lat, lng = map(float, message_text.split(','))
+            # 自動把空格都殺光，避免格式錯誤
+            clean_text = message_text.replace(" ", "")
+            lat_str, lng_str = clean_text.split(',')
+            
+            # 確保真的是數字
+            lat = float(lat_str)
+            lng = float(lng_str)
+            
             state = get_user_state(user_id)
-            # 讀取剛剛按鈕設定的模式
             mode = state.get("last_mode", "personal")
             category = state.get("last_category", "美食")
             
@@ -161,7 +167,9 @@ def callback():
                 spots = get_nearby_spots(user_id, lat, lng, limit=10, target_category=category)
             
             reply_line(reply_token, [create_radar_flex(spots, lat, lng, mode, category)])
-        except: pass
+        except Exception as e:
+            print(f"⚠️ 座標解析失敗: {e}")
+            pass
 
     return "OK", 200
 
