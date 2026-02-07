@@ -130,20 +130,17 @@ def save_map_link(user_id, url):
 
         guessed_category = guess_category_by_name(fetched_name)
 
-        # ★★★ 這裡修正了：把 url 存入 address 欄位 ★★★
+        # ★★★ 修正點：同時塞給兩個欄位，誰也別想擋我！ ★★★
         data = {
             "user_id": user_id,
-            "address": url,            # <--- 修正點！對應您的資料庫欄位
+            "address": url,           # 為了應對您截圖中的欄位
+            "google_map_url": url,    # 為了應對資料庫的必填限制
             "location_name": fetched_name,
             "category": guessed_category,
             "latitude": lat,
             "longitude": lng,
             "created_at": "now()"
         }
-        
-        # 這裡加一個保險：如果您的資料庫其實也想要 google_map_url，我們可以兩個都存
-        # 但根據截圖，address 是確定有的
-        # data["google_map_url"] = url 
         
         supabase.table("map_spots").insert(data).execute()
         return fetched_name, guessed_category
@@ -162,7 +159,7 @@ def get_hotspots_rpc(lat, lng, target_category=None):
 
 def get_nearby_spots(user_id, lat, lng, limit=10, target_category="美食"):
     try:
-        # ★ 這裡也修正：讀取時如果沒有 google_map_url，就讀 address
+        # ★ 讀取時也做雙重保險
         response = supabase.table("map_spots").select("*").eq("user_id", user_id).execute()
         spots = response.data
         results = []
@@ -207,8 +204,8 @@ def create_radar_flex(spots, center_lat, center_lng, mode="personal", category="
             cat = spot.get('category', '其它')
             dist = spot.get('dist_meters', 0)
             note = f"🐾 距離 {dist} m"
-            # ★ 修正：優先讀取 address 作為導航連結
-            map_url = spot.get('address') or spot.get('google_map_url') or ""
+            # ★ 雙重保險：有誰用誰
+            map_url = spot.get('google_map_url') or spot.get('address') or ""
 
         color = CATEGORY_COLORS.get(cat, "#7F8C8D")
         icon = CATEGORY_ICONS.get(cat, CATEGORY_ICONS["其它"])
