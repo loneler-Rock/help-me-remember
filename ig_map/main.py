@@ -5,6 +5,7 @@ import requests
 import re
 import sys
 from supabase import create_client, Client
+from bs4 import BeautifulSoup # 引入分析網頁的工具
 
 # --- 1. 初始化設定 ---
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -51,29 +52,61 @@ def get_user_state(user_id):
     except: pass
     return {"last_mode": "personal", "last_category": "美食"}
 
+# ★★★ 新增：抓取網頁標題的函式 ★★★
+def get_url_title(url):
+    try:
+        # 偽裝成一般瀏覽器 (User-Agent)，不然 Google 會擋
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
+        # 設定 5 秒超時，避免卡太久
+        response = requests.get(url, headers=headers, timeout=5, allow_redirects=True)
+        
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, 'html.parser')
+            # 抓取 <title> 標籤
+            if soup.title and soup.title.string:
+                title = soup.title.string
+                # 清理標題：把 "- Google 地圖" 這種字眼拿掉
+                title = title.replace(" - Google 地圖", "").replace(" - Google Maps", "")
+                return title.strip()
+            
+            # 如果抓不到 title，試試看 OpenGraph 標籤 (og:title)
+            og_title = soup.find("meta", property="og:title")
+            if og_title and og_title.get("content"):
+                return og_title["content"].strip()
+
+    except Exception as e:
+        print(f"⚠️ 抓標題失敗: {e}")
+    
+    return "新地標 (待整理)" # 真的抓不到才用這個
+
 def save_map_link(user_id, url):
     """
-    修正版：使用正確的欄位名稱 location_name 並補上座標預設值
+    修正版：先抓標題，再存入
     """
     try:
-        # 準備要寫入的資料
+        # 1. 嘗試抓取標題
+        print(f"正在分析網址: {url}")
+        fetched_name = get_url_title(url)
+        print(f"抓到的店名: {fetched_name}")
+
+        # 2. 存入 Supabase
         data = {
             "user_id": user_id,
             "google_map_url": url,
-            "location_name": "新地標 (待整理)",  # ★ 修正：從 name 改回 location_name
+            "location_name": fetched_name, # 使用抓到的名字
             "category": "其它",
-            "latitude": 0.0,    # ★ 新增：避免資料庫因為缺少座標而報錯
-            "longitude": 0.0,   # ★ 新增：避免資料庫因為缺少座標而報錯
+            "latitude": 0.0,
+            "longitude": 0.0,
             "created_at": "now()"
         }
         
-        # 執行寫入
         supabase.table("map_spots").insert(data).execute()
-        print(f"✅ 成功儲存連結: {url}")
-        return True
+        return fetched_name # 回傳抓到的名字，讓 LINE 可以回覆
     except Exception as e:
-        print(f"❌ 儲存失敗 (詳細錯誤): {e}")
-        return False
+        print(f"❌ 儲存失敗: {e}")
+        return None
 
 # --- 4. 搜尋功能 (美食/景點) ---
 def get_hotspots_rpc(lat, lng, target_category=None):
@@ -90,7 +123,6 @@ def get_nearby_spots(user_id, lat, lng, limit=10, target_category="美食"):
         spots = response.data
         results = []
         for spot in spots:
-            # 嚴格分類過濾
             db_cat = spot.get('category', '其它')
             if target_category and db_cat != target_category and target_category != "其它": 
                 continue
@@ -125,7 +157,7 @@ def create_radar_flex(spots, center_lat, center_lng, mode="personal", category="
                 cat = "熱點"; note = f"🔥 {spot.get('popularity',0)} 人氣"
             map_url = spot.get('google_url') or "http://maps.google.com"
         else:
-            # ★ 修正：優先使用 location_name，如果沒有才用 name
+            # 優先使用 location_name
             name = spot.get('location_name') or spot.get('name', '未命名')
             cat = spot.get('category', '其它')
             dist = spot.get('dist_meters', 0)
@@ -201,14 +233,16 @@ def main():
             }
         }
     
-    # ★ 1. 儲存連結邏輯 (優先處理)
+    # ★ 1. 儲存連結
     if "http" in msg:
         print("偵測到網址，執行儲存邏輯...")
-        success = save_map_link(user_id, msg)
-        if success:
-            reply_line(reply_token, [{"type": "text", "text": "😺 順順幫你記下來了！\n(已存入「其它」分類，晚點記得整理喔～)"}])
+        # 這裡接收回傳的店名
+        saved_name = save_map_link(user_id, msg)
+        
+        if saved_name:
+            reply_line(reply_token, [{"type": "text", "text": f"😺 順順幫你記下來了！\n\n📍 {saved_name}\n\n(已存入「其它」分類)"}])
         else:
-            reply_line(reply_token, [{"type": "text", "text": "😿 哎呀，儲存失敗了... (可能是資料庫欄位對不上)"}])
+            reply_line(reply_token, [{"type": "text", "text": "😿 哎呀，儲存失敗了... 再試一次看看？"}])
         return 
 
     # ★ 2. 智慧判斷類別
