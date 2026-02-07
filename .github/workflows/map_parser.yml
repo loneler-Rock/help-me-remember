@@ -1,8 +1,8 @@
-name: Map Saver
+name: Map Bot Runner
 
 on:
   repository_dispatch:
-    types: [save_map]
+    types: [run_bot]
   workflow_dispatch:
     inputs:
       test_url:
@@ -33,12 +33,12 @@ jobs:
         run: |
           echo "🗺️ [地圖核心] 啟動..."
           
-          # --- 變數名稱修正 (UID -> USER_ID) ---
+          # --- 變數接收區 (對應 Make JSON) ---
           
-          # 1. 訊息內容 (Message)
-          MSG="${{ github.event.client_payload.message_text || github.event.inputs.test_url }}"
+          # 1. 訊息內容 (Make 傳過來的是 'message' 不是 'message_text')
+          MSG="${{ github.event.client_payload.message || github.event.inputs.test_url }}"
           
-          # 2. User ID (修正變數名稱，避免衝突)
+          # 2. User ID
           USER_ID="${{ github.event.client_payload.user_id || 'manual_test_user' }}"
           
           # 3. Reply Token
@@ -46,5 +46,5 @@ jobs:
 
           echo "測試模式: 輸入內容 -> $MSG"
           
-          # 執行 Python (傳入 USER_ID)
+          # 執行 Python (請確認你的 main.py 真的是在 ig_map 資料夾下，如果是在根目錄請把 ig_map/ 去掉)
           python ig_map/main.py "$MSG" "$USER_ID" "$TOKEN"
