@@ -67,7 +67,7 @@ def guess_category_by_name(name):
         if k in name: return "美食"
     return "其它"
 
-# ★★★ 強化版：抓標題 + 抓座標 ★★★
+# --- 強化版：抓標題 + 抓座標 ---
 def analyze_url(url):
     try:
         headers = {
@@ -75,26 +75,22 @@ def analyze_url(url):
             "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7"
         }
         
-        # 取得網頁 (會自動展開短網址)
         response = requests.get(url, headers=headers, timeout=8, allow_redirects=True)
         final_url = response.url 
         print(f"長網址: {final_url}")
 
-        # --- 1. 偷抓座標 (解析網址中的 @lat,lng) ---
+        # 1. 抓座標
         lat, lng = 0.0, 0.0
-        # 正規表達式尋找 @數字,數字
         coords_match = re.search(r'@(-?\d+\.\d+),(-?\d+\.\d+)', final_url)
         if coords_match:
             lat = float(coords_match.group(1))
             lng = float(coords_match.group(2))
-            print(f"抓到座標: {lat}, {lng}")
         
-        # --- 2. 抓標題 ---
+        # 2. 抓標題
         title_candidate = "新地標 (待整理)"
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # 策略 A: og:title
             og_title = soup.find("meta", property="og:title")
             raw_title = ""
             if og_title and og_title.get("content"):
@@ -102,7 +98,6 @@ def analyze_url(url):
             elif soup.title and soup.title.string:
                 raw_title = soup.title.string
             
-            # 清理標題
             if raw_title:
                 clean_title = raw_title.split('·')[0] 
                 clean_title = clean_title.split('- Google')[0]
@@ -110,7 +105,6 @@ def analyze_url(url):
                 if clean_title and "Google Maps" not in clean_title:
                     title_candidate = clean_title
             
-            # 策略 C: 從網址分析 (如果標題失敗)
             if title_candidate == "新地標 (待整理)" and "/place/" in final_url:
                 try:
                     parts = final_url.split("/place/")[1]
@@ -128,7 +122,6 @@ def analyze_url(url):
 def save_map_link(user_id, url):
     try:
         print(f"正在分析網址: {url}")
-        # 呼叫新的分析函式，一次拿回三個東西
         fetched_name, lat, lng = analyze_url(url)
         print(f"抓到的店名: {fetched_name}, 座標: {lat},{lng}")
 
@@ -137,15 +130,20 @@ def save_map_link(user_id, url):
 
         guessed_category = guess_category_by_name(fetched_name)
 
+        # ★★★ 這裡修正了：把 url 存入 address 欄位 ★★★
         data = {
             "user_id": user_id,
-            "google_map_url": url,
+            "address": url,            # <--- 修正點！對應您的資料庫欄位
             "location_name": fetched_name,
             "category": guessed_category,
-            "latitude": lat,  # ★ 存入抓到的座標
-            "longitude": lng, # ★ 存入抓到的座標
+            "latitude": lat,
+            "longitude": lng,
             "created_at": "now()"
         }
+        
+        # 這裡加一個保險：如果您的資料庫其實也想要 google_map_url，我們可以兩個都存
+        # 但根據截圖，address 是確定有的
+        # data["google_map_url"] = url 
         
         supabase.table("map_spots").insert(data).execute()
         return fetched_name, guessed_category
@@ -164,6 +162,7 @@ def get_hotspots_rpc(lat, lng, target_category=None):
 
 def get_nearby_spots(user_id, lat, lng, limit=10, target_category="美食"):
     try:
+        # ★ 這裡也修正：讀取時如果沒有 google_map_url，就讀 address
         response = supabase.table("map_spots").select("*").eq("user_id", user_id).execute()
         spots = response.data
         results = []
@@ -173,11 +172,13 @@ def get_nearby_spots(user_id, lat, lng, limit=10, target_category="美食"):
                 continue
             s_lat = spot.get('latitude')
             s_lng = spot.get('longitude')
-            # 這裡加個判斷，如果座標是 0.0 就不要算距離了，或者視為無限遠
             if s_lat and s_lng and (s_lat != 0.0 or s_lng != 0.0):
                 dist = math.sqrt((s_lat - lat)**2 + (s_lng - lng)**2)
                 spot['dist_score'] = dist
                 spot['dist_meters'] = int(dist * 111 * 1000)
+                # 確保 google_map_url 有值，這樣卡片按鈕才不會壞
+                if not spot.get('google_map_url'):
+                    spot['google_map_url'] = spot.get('address')
                 results.append(spot)
         results.sort(key=lambda x: x['dist_score'])
         return results[:limit]
@@ -206,7 +207,8 @@ def create_radar_flex(spots, center_lat, center_lng, mode="personal", category="
             cat = spot.get('category', '其它')
             dist = spot.get('dist_meters', 0)
             note = f"🐾 距離 {dist} m"
-            map_url = spot.get('google_map_url') or spot.get('address')
+            # ★ 修正：優先讀取 address 作為導航連結
+            map_url = spot.get('address') or spot.get('google_map_url') or ""
 
         color = CATEGORY_COLORS.get(cat, "#7F8C8D")
         icon = CATEGORY_ICONS.get(cat, CATEGORY_ICONS["其它"])
