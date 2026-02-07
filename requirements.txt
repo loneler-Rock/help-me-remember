@@ -5,3 +5,4 @@ supabase
 selenium
 webdriver-manager
 urllib3
+beautifulsoup4
