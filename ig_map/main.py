@@ -5,7 +5,6 @@ import requests
 import re
 import sys
 from supabase import create_client, Client
-from urllib.parse import urlparse, parse_qs
 
 # --- 1. 初始化設定 ---
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -54,27 +53,26 @@ def get_user_state(user_id):
 
 def save_map_link(user_id, url):
     """
-    簡單的儲存連結功能。
-    因為在 GitHub Actions 跑完整爬蟲比較慢，這裡先做「快速儲存」。
+    修正版：使用正確的欄位名稱 location_name 並補上座標預設值
     """
     try:
-        # 1. 嘗試抓取網址中的一點點資訊 (如果有 CID 或座標)
-        # 這是一個簡易版，主要目的是先把連結存進去不遺失
-        location_name = "新地標 (待整理)"
-        
-        # 2. 存入 Supabase
-        # 注意：這裡假設您的 map_spots 表格允許 name 為空或是您可以接受預設值
+        # 準備要寫入的資料
         data = {
             "user_id": user_id,
             "google_map_url": url,
-            "name": location_name,
-            "category": "其它", # 預設先分類為其它，使用者以後可以改
+            "location_name": "新地標 (待整理)",  # ★ 修正：從 name 改回 location_name
+            "category": "其它",
+            "latitude": 0.0,    # ★ 新增：避免資料庫因為缺少座標而報錯
+            "longitude": 0.0,   # ★ 新增：避免資料庫因為缺少座標而報錯
             "created_at": "now()"
         }
+        
+        # 執行寫入
         supabase.table("map_spots").insert(data).execute()
+        print(f"✅ 成功儲存連結: {url}")
         return True
     except Exception as e:
-        print(f"❌ 儲存失敗: {e}")
+        print(f"❌ 儲存失敗 (詳細錯誤): {e}")
         return False
 
 # --- 4. 搜尋功能 (美食/景點) ---
@@ -127,7 +125,8 @@ def create_radar_flex(spots, center_lat, center_lng, mode="personal", category="
                 cat = "熱點"; note = f"🔥 {spot.get('popularity',0)} 人氣"
             map_url = spot.get('google_url') or "http://maps.google.com"
         else:
-            name = spot['location_name'] or spot.get('name', '未命名')
+            # ★ 修正：優先使用 location_name，如果沒有才用 name
+            name = spot.get('location_name') or spot.get('name', '未命名')
             cat = spot.get('category', '其它')
             dist = spot.get('dist_meters', 0)
             note = f"🐾 距離 {dist} m"
@@ -202,25 +201,24 @@ def main():
             }
         }
     
-    # ★★★ 1. 最優先：如果是網址，直接存起來！(修復了這裡) ★★★
+    # ★ 1. 儲存連結邏輯 (優先處理)
     if "http" in msg:
         print("偵測到網址，執行儲存邏輯...")
-        # 呼叫儲存函式
         success = save_map_link(user_id, msg)
         if success:
-            reply_line(reply_token, [{"type": "text", "text": "😺 順順幫你記下來了！\n(我先幫你收著，晚點記得整理喔～)"}])
+            reply_line(reply_token, [{"type": "text", "text": "😺 順順幫你記下來了！\n(已存入「其它」分類，晚點記得整理喔～)"}])
         else:
-            reply_line(reply_token, [{"type": "text", "text": "😿 哎呀，儲存失敗了... 再試一次看看？"}])
-        return # 存完就結束，不要往下跑搜尋
+            reply_line(reply_token, [{"type": "text", "text": "😿 哎呀，儲存失敗了... (可能是資料庫欄位對不上)"}])
+        return 
 
-    # ★ 2. 智慧判斷類別 (美食/景點/住宿)
+    # ★ 2. 智慧判斷類別
     target_cat = "美食" 
     if "景點" in msg or "玩" in msg:
         target_cat = "景點"
     elif "住宿" in msg or "住" in msg:
         target_cat = "住宿"
     
-    # --- 邏輯 A：混合指令 (熱點/帶路 + 座標) ---
+    # --- 邏輯 A：混合指令 ---
     if ("," in msg or "，" in msg) and ("熱點" in msg or "帶路" in msg or "景點" in msg or "美食" in msg):
         try:
             clean_msg = re.sub(r'[^\d.,-]', '', msg) 
@@ -236,7 +234,7 @@ def main():
             return
         except: pass
 
-    # --- 邏輯 B：純座標 (通常是按了 + 號傳送位置) ---
+    # --- 邏輯 B：純座標 ---
     if "," in msg:
         try:
             clean_msg = msg.replace(" ", "")
@@ -253,9 +251,9 @@ def main():
             return
         except: pass
 
-    # --- 邏輯 C：文字指令 (切換模式與類別) ---
+    # --- 邏輯 C：文字指令 ---
     if "說明" in msg or "教學" in msg:
-        reply_line(reply_token, [{"type": "text", "text": "😺 我是順順！\n\n你可以說：\n🔸「順順帶路」👉 找私藏美食\n🔸「貓友熱點」👉 找熱門美食\n🔸「找景點」👉 找私藏景點\n🔸「景點熱點」👉 找熱門景點\n\n當然，直接分享 Google Maps 連結給我，我會立刻幫你存！"}])
+        reply_line(reply_token, [{"type": "text", "text": "😺 我是順順！\n\n你可以說：\n🔸「順順帶路」👉 找私藏美食\n🔸「找景點」👉 找私藏景點\n🔸「貓友熱點」👉 找熱門美食\n\n直接分享 Google Maps 連結給我，我會立刻幫你存！"}])
     
     elif "熱點" in msg:
         update_user_state(user_id, "hotspot", target_cat)
