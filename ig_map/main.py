@@ -51,25 +51,35 @@ def calculate_distance(lat1, lon1, lat2, lon2):
     distance = R * c
     return distance # 單位：公里
 
-# --- Flex Message 工具 ---
-def create_radar_carousel(spots):
+# --- Flex Message 工具 (通用版) ---
+def create_flex_carousel(spots, title="您的收藏"):
     bubbles = []
-    # 只取前 5 筆最近的
-    for spot in spots[:5]:
+    # 限制最多顯示 10 筆
+    for spot in spots[:10]:
         name = spot.get('location_name', '未命名')
         category = spot.get('category', '其它')
         address = spot.get('address', '無地址')
         url = spot.get('google_map_url', 'http://googleusercontent.com/maps.google.com/3')
-        dist = spot.get('dist_km', 0)
         
-        # 距離顯示優化
-        dist_text = f"{int(dist*1000)}m" if dist < 1 else f"{dist:.1f}km"
+        # 處理距離顯示 (如果有 dist_km 欄位)
+        dist_info = ""
+        if 'dist_km' in spot:
+            dist = spot['dist_km']
+            dist_text = f"{int(dist*1000)}m" if dist < 1 else f"{dist:.1f}km"
+            dist_info = dist_text
 
         # 設定顏色
         header_color = "#E67E22" # Default Orange
         if category == "景點": header_color = "#27AE60"
         if category == "住宿": header_color = "#8E44AD"
         if category == "其它": header_color = "#95A5A6"
+
+        # 標題欄內容
+        header_contents = [
+            {"type": "text", "text": category, "color": "#ffffff", "weight": "bold", "size": "xs", "flex": 1}
+        ]
+        if dist_info:
+            header_contents.append({"type": "text", "text": dist_info, "color": "#ffffff", "weight": "bold", "size": "xs", "align": "end", "flex": 1})
 
         bubble = {
             "type": "bubble",
@@ -80,10 +90,7 @@ def create_radar_carousel(spots):
                 "contents": [
                     {
                         "type": "box", "layout": "horizontal",
-                        "contents": [
-                             {"type": "text", "text": category, "color": "#ffffff", "weight": "bold", "size": "xs", "flex": 1},
-                             {"type": "text", "text": dist_text, "color": "#ffffff", "weight": "bold", "size": "xs", "align": "end", "flex": 1}
-                        ]
+                        "contents": header_contents
                     },
                     {"type": "text", "text": name, "color": "#ffffff", "weight": "bold", "size": "sm", "wrap": True, "margin": "md"}
                 ],
@@ -116,18 +123,19 @@ def create_radar_carousel(spots):
     
     return {
         "type": "flex",
-        "altText": "附近的收藏點",
+        "altText": title,
         "contents": {
             "type": "carousel",
             "contents": bubbles
         }
     }
 
-# --- 雷達核心邏輯 ---
+# --- 功能邏輯 ---
+
 def handle_location_search(user_lat, user_lng, user_id, reply_token):
     print(f"📡 [雷達模式] 搜尋 ({user_lat}, {user_lng}) 附近的點...")
     try:
-        # 1. 抓取用戶所有資料 (若資料量大未來可改為 PostGIS 查詢)
+        # 1. 抓取用戶所有資料
         response = supabase.table("map_spots").select("*").eq("user_id", user_id).execute()
         spots = response.data
         
@@ -135,7 +143,7 @@ def handle_location_search(user_lat, user_lng, user_id, reply_token):
             reply_line(reply_token, [{"type": "text", "text": "📭 你還沒有收藏任何地點喔！"}])
             return
 
-        # 2. Python 計算距離並排序
+        # 2. 計算距離
         valid_spots = []
         for spot in spots:
             if spot['latitude'] and spot['longitude']:
@@ -146,19 +154,18 @@ def handle_location_search(user_lat, user_lng, user_id, reply_token):
         # 3. 排序：由近到遠
         valid_spots.sort(key=lambda x: x['dist_km'])
         
-        # 4. 取前 5 筆並回傳
+        # 4. 取前 5 筆
         nearest_spots = valid_spots[:5]
         
         if not nearest_spots:
              reply_line(reply_token, [{"type": "text", "text": "⚠️ 附近沒有找到收藏點。"}])
              return
 
-        # 顯示最近的一筆距離，若太遠 (>50km) 提醒一下
-        msg_text = "🔎 找到附近的地點囉！"
+        msg_text = "🔎 這是離你最近的地點："
         if nearest_spots[0]['dist_km'] > 50:
-            msg_text = "🔎 附近沒有收藏，這是離你最近的："
+            msg_text = "🔎 附近沒有收藏，這是最近的幾個："
 
-        flex_message = create_radar_carousel(nearest_spots)
+        flex_message = create_flex_carousel(nearest_spots, "附近地點")
         reply_line(reply_token, [{"type": "text", "text": msg_text}, flex_message])
         print("✅ 雷達搜尋完成")
 
@@ -166,7 +173,21 @@ def handle_location_search(user_lat, user_lng, user_id, reply_token):
         print(f"❌ 雷達錯誤: {e}")
         reply_line(reply_token, [{"type": "text", "text": "❌ 搜尋失敗"}])
 
-# --- 原本的 OSM 與 分類工具 (保持不變) ---
+def handle_query_list(user_id, reply_token):
+    print(f"🔍 [查詢模式] 撈取用戶 {user_id} 最近收藏...")
+    try:
+        response = supabase.table("map_spots").select("*").eq("user_id", user_id).order("created_at", desc=True).limit(5).execute()
+        data = response.data
+        if not data:
+            reply_line(reply_token, [{"type": "text", "text": "📭 目前沒有收藏紀錄。"}])
+            return
+        flex_message = create_flex_carousel(data, "最近收藏")
+        reply_line(reply_token, [flex_message])
+    except Exception as e:
+        print(f"❌ 查詢失敗: {e}")
+        reply_line(reply_token, [{"type": "text", "text": "❌ 讀取失敗"}])
+
+# --- OSM 與分類工具 ---
 def parse_osm_category(data):
     if not data: return None
     if isinstance(data, list): item = data[0] if data else None
@@ -186,7 +207,7 @@ def parse_osm_category(data):
 def get_osm_by_coordinate(lat, lng):
     try:
         url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lng}&zoom=18&addressdetails=1&accept-language=zh-TW"
-        headers = {'User-Agent': 'HelpMeRememberBot/2.8'}
+        headers = {'User-Agent': 'HelpMeRememberBot/3.0'}
         r = requests.get(url, headers=headers, timeout=5)
         return parse_osm_category(r.json())
     except: return None
@@ -195,7 +216,7 @@ def get_osm_by_name(name, lat, lng):
     try:
         viewbox = f"{lng-0.002},{lat-0.002},{lng+0.002},{lat+0.002}"
         url = f"https://nominatim.openstreetmap.org/search?q={name}&format=json&viewbox={viewbox}&bounded=1&limit=1&accept-language=zh-TW"
-        headers = {'User-Agent': 'HelpMeRememberBot/2.8'}
+        headers = {'User-Agent': 'HelpMeRememberBot/3.0'}
         r = requests.get(url, headers=headers, timeout=5)
         data = r.json()
         if data: return parse_osm_category(data)
@@ -222,7 +243,7 @@ def determine_category_smart(title, full_text, lat, lng):
     return "其它"
 
 def get_real_url_with_browser(url):
-    print(f"🕵️ [DEBUG] 啟動 Chrome (V3.0)... 目標: {url}")
+    print(f"🕵️ [DEBUG] 啟動 Chrome (V3.1)... 目標: {url}")
     options = Options()
     options.add_argument("--headless")
     options.add_argument("--no-sandbox")
@@ -274,42 +295,6 @@ def check_duplicate(user_id, location_name):
         return None
     except: return None
 
-# --- 主入口 ---
-def main():
-    if len(sys.argv) < 4:
-        print("❌ 參數不足")
-        return
-
-    raw_message = sys.argv[1]
-    user_id = sys.argv[2]
-    reply_token = sys.argv[3]
-    
-    # 判斷是否為「位置訊息」
-    # 注意：LINE 傳來的位置訊息在 Make 中通常會以 JSON 格式或特定字串傳入
-    # 這裡我們假設 Make 有一個 logic: 
-    # 如果是位置訊息，raw_message 會長得像 "LOCATION:{lat},{lng}" (這需要在 Make 設定)
-    # 或者是我們簡單判斷，如果 raw_message 包含 "lat" 和 "lng" (當作 JSON 處理)
-
-    is_location = False
-    user_lat = 0.0
-    user_lng = 0.0
-
-    # 嘗試解析是否為位置訊號
-    if raw_message.startswith("LOCATION:"):
-        try:
-            parts = raw_message.replace("LOCATION:", "").split(",")
-            user_lat = float(parts[0])
-            user_lng = float(parts[1])
-            is_location = True
-        except: pass
-
-    if is_location:
-        handle_location_search(user_lat, user_lng, user_id, reply_token)
-        return
-
-    # 否則：預設進入存檔模式
-    handle_save_task(raw_message, user_id, reply_token)
-
 def handle_save_task(raw_message, user_id, reply_token):
     print(f"📥 [存檔模式] 開始處理...")
     target_url = extract_map_url(raw_message)
@@ -345,6 +330,37 @@ def handle_save_task(raw_message, user_id, reply_token):
             reply_line(reply_token, [{"type": "text", "text": "❌ 資料庫寫入失敗"}])
     else:
         reply_line(reply_token, [{"type": "text", "text": "⚠️ 無法解析座標"}])
+
+# --- 主入口 (V3.1 Router) ---
+def main():
+    if len(sys.argv) < 4:
+        print("❌ 參數不足")
+        return
+
+    raw_message = sys.argv[1]
+    user_id = sys.argv[2]
+    reply_token = sys.argv[3]
+    
+    print(f"🚀 啟動! 訊息: {raw_message}")
+
+    # 1. 判斷是否為「清單」指令
+    if raw_message.strip().lower() in ["list", "清單", "列表", "help", "查詢"]:
+        handle_query_list(user_id, reply_token)
+        return
+
+    # 2. 判斷是否為「位置訊息」 (格式: LOCATION:25.03,121.56)
+    if raw_message.startswith("LOCATION:"):
+        try:
+            parts = raw_message.replace("LOCATION:", "").split(",")
+            user_lat = float(parts[0])
+            user_lng = float(parts[1])
+            handle_location_search(user_lat, user_lng, user_id, reply_token)
+            return
+        except Exception as e:
+            print(f"❌ 解析座標失敗: {e}")
+
+    # 3. 否則：預設進入存檔模式 (處理 Google Maps 連結)
+    handle_save_task(raw_message, user_id, reply_token)
 
 if __name__ == "__main__":
     main()
