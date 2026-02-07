@@ -2,7 +2,6 @@ import os
 import sys
 import time
 import re
-import math
 import requests
 import json
 from supabase import create_client, Client
@@ -10,7 +9,8 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
-from urllib.parse import unquotefrom selenium.webdriver.common.by import By
+from urllib.parse import unquote
+from selenium.webdriver.common.by import By
 
 # --- 初始化與設定 ---
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
