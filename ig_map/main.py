@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import re
+import math
 import requests
 import json
 from supabase import create_client, Client
@@ -38,16 +39,33 @@ def reply_line(token, messages):
     except Exception as e:
         print(f"❌ LINE 回覆失敗: {e}")
 
+# --- 數學工具：計算距離 (Haversine Formula) ---
+def calculate_distance(lat1, lon1, lat2, lon2):
+    R = 6371  # 地球半徑 (km)
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = math.sin(dlat / 2) * math.sin(dlat / 2) + \
+        math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * \
+        math.sin(dlon / 2) * math.sin(dlon / 2)
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    distance = R * c
+    return distance # 單位：公里
+
 # --- Flex Message 工具 ---
-def create_flex_carousel(spots):
+def create_radar_carousel(spots):
     bubbles = []
-    for spot in spots:
+    # 只取前 5 筆最近的
+    for spot in spots[:5]:
         name = spot.get('location_name', '未命名')
         category = spot.get('category', '其它')
         address = spot.get('address', '無地址')
-        url = spot.get('google_map_url', 'https://maps.google.com')
+        url = spot.get('google_map_url', 'http://googleusercontent.com/maps.google.com/3')
+        dist = spot.get('dist_km', 0)
         
-        # 設定顏色：美食(橘), 景點(綠), 住宿(紫), 其它(灰)
+        # 距離顯示優化
+        dist_text = f"{int(dist*1000)}m" if dist < 1 else f"{dist:.1f}km"
+
+        # 設定顏色
         header_color = "#E67E22" # Default Orange
         if category == "景點": header_color = "#27AE60"
         if category == "住宿": header_color = "#8E44AD"
@@ -60,8 +78,14 @@ def create_flex_carousel(spots):
                 "type": "box",
                 "layout": "vertical",
                 "contents": [
-                    {"type": "text", "text": category, "color": "#ffffff", "weight": "bold", "size": "xs"},
-                    {"type": "text", "text": name, "color": "#ffffff", "weight": "bold", "size": "sm", "wrap": True}
+                    {
+                        "type": "box", "layout": "horizontal",
+                        "contents": [
+                             {"type": "text", "text": category, "color": "#ffffff", "weight": "bold", "size": "xs", "flex": 1},
+                             {"type": "text", "text": dist_text, "color": "#ffffff", "weight": "bold", "size": "xs", "align": "end", "flex": 1}
+                        ]
+                    },
+                    {"type": "text", "text": name, "color": "#ffffff", "weight": "bold", "size": "sm", "wrap": True, "margin": "md"}
                 ],
                 "backgroundColor": header_color,
                 "paddingAll": "8px"
@@ -74,7 +98,7 @@ def create_flex_carousel(spots):
                         "type": "box", "layout": "baseline", "spacing": "sm",
                         "contents": [
                             {"type": "text", "text": "📍", "size": "xs", "flex": 1},
-                            {"type": "text", "text": address[:20] + "..." if len(address)>20 else address, "wrap": True, "color": "#666666", "size": "xs", "flex": 5}
+                            {"type": "text", "text": address[:18] + "..." if len(address)>18 else address, "wrap": True, "color": "#666666", "size": "xs", "flex": 5}
                         ]
                     }
                 ],
@@ -92,43 +116,61 @@ def create_flex_carousel(spots):
     
     return {
         "type": "flex",
-        "altText": "您的收藏清單",
+        "altText": "附近的收藏點",
         "contents": {
             "type": "carousel",
             "contents": bubbles
         }
     }
 
-# --- 功能邏輯 ---
-
-def handle_query_list(user_id, reply_token):
-    print(f"🔍 [查詢模式] 正在撈取用戶 {user_id} 的最近收藏...")
+# --- 雷達核心邏輯 ---
+def handle_location_search(user_lat, user_lng, user_id, reply_token):
+    print(f"📡 [雷達模式] 搜尋 ({user_lat}, {user_lng}) 附近的點...")
     try:
-        # 從 Supabase 抓取最近 5 筆
-        response = supabase.table("map_spots").select("*").eq("user_id", user_id).order("created_at", desc=True).limit(5).execute()
-        data = response.data
+        # 1. 抓取用戶所有資料 (若資料量大未來可改為 PostGIS 查詢)
+        response = supabase.table("map_spots").select("*").eq("user_id", user_id).execute()
+        spots = response.data
         
-        if not data:
-            reply_line(reply_token, [{"type": "text", "text": "📭 目前沒有收藏紀錄喔！趕快分享地圖連結給我吧。"}])
+        if not spots:
+            reply_line(reply_token, [{"type": "text", "text": "📭 你還沒有收藏任何地點喔！"}])
             return
 
-        flex_message = create_flex_carousel(data)
-        reply_line(reply_token, [flex_message])
-        print("✅ 清單回覆成功")
+        # 2. Python 計算距離並排序
+        valid_spots = []
+        for spot in spots:
+            if spot['latitude'] and spot['longitude']:
+                d = calculate_distance(user_lat, user_lng, spot['latitude'], spot['longitude'])
+                spot['dist_km'] = d
+                valid_spots.append(spot)
         
-    except Exception as e:
-        print(f"❌ 查詢失敗: {e}")
-        reply_line(reply_token, [{"type": "text", "text": "❌ 讀取資料庫失敗"}])
+        # 3. 排序：由近到遠
+        valid_spots.sort(key=lambda x: x['dist_km'])
+        
+        # 4. 取前 5 筆並回傳
+        nearest_spots = valid_spots[:5]
+        
+        if not nearest_spots:
+             reply_line(reply_token, [{"type": "text", "text": "⚠️ 附近沒有找到收藏點。"}])
+             return
 
-# (保留原本的 OSM 與 爬蟲工具函式，省略重複部分以節省篇幅，但請確保程式碼包含原本的所有函式)
-# --- 原本的 OSM 與 分類工具 ---
+        # 顯示最近的一筆距離，若太遠 (>50km) 提醒一下
+        msg_text = "🔎 找到附近的地點囉！"
+        if nearest_spots[0]['dist_km'] > 50:
+            msg_text = "🔎 附近沒有收藏，這是離你最近的："
+
+        flex_message = create_radar_carousel(nearest_spots)
+        reply_line(reply_token, [{"type": "text", "text": msg_text}, flex_message])
+        print("✅ 雷達搜尋完成")
+
+    except Exception as e:
+        print(f"❌ 雷達錯誤: {e}")
+        reply_line(reply_token, [{"type": "text", "text": "❌ 搜尋失敗"}])
+
+# --- 原本的 OSM 與 分類工具 (保持不變) ---
 def parse_osm_category(data):
-    # ... (貼上 V2.8.1 的 parse_osm_category 程式碼) ...
     if not data: return None
-    if isinstance(data, list):
-        item = data[0] if data else None
-    else:
-        item = data
+    if isinstance(data, list): item = data[0] if data else None
+    else: item = data
     if not item: return None
     osm_category = item.get('category', '') or item.get('class', '')
     osm_type = item.get('type', '')
@@ -180,8 +222,7 @@ def determine_category_smart(title, full_text, lat, lng):
     return "其它"
 
 def get_real_url_with_browser(url):
-    # ... (貼上 V2.8.1 的瀏覽器程式碼) ...
-    print(f"🕵️ [DEBUG] 啟動 Chrome (V2.9)... 目標: {url}")
+    print(f"🕵️ [DEBUG] 啟動 Chrome (V3.0)... 目標: {url}")
     options = Options()
     options.add_argument("--headless")
     options.add_argument("--no-sandbox")
@@ -234,10 +275,36 @@ def check_duplicate(user_id, location_name):
     except: return None
 
 # --- 主入口 ---
-def main(raw_message, user_id, reply_token):
-    # 判斷指令：如果是 "list" 或 "清單"，進入查詢模式
-    if raw_message.strip().lower() in ["list", "清單", "列表"]:
-        handle_query_list(user_id, reply_token)
+def main():
+    if len(sys.argv) < 4:
+        print("❌ 參數不足")
+        return
+
+    raw_message = sys.argv[1]
+    user_id = sys.argv[2]
+    reply_token = sys.argv[3]
+    
+    # 判斷是否為「位置訊息」
+    # 注意：LINE 傳來的位置訊息在 Make 中通常會以 JSON 格式或特定字串傳入
+    # 這裡我們假設 Make 有一個 logic: 
+    # 如果是位置訊息，raw_message 會長得像 "LOCATION:{lat},{lng}" (這需要在 Make 設定)
+    # 或者是我們簡單判斷，如果 raw_message 包含 "lat" 和 "lng" (當作 JSON 處理)
+
+    is_location = False
+    user_lat = 0.0
+    user_lng = 0.0
+
+    # 嘗試解析是否為位置訊號
+    if raw_message.startswith("LOCATION:"):
+        try:
+            parts = raw_message.replace("LOCATION:", "").split(",")
+            user_lat = float(parts[0])
+            user_lng = float(parts[1])
+            is_location = True
+        except: pass
+
+    if is_location:
+        handle_location_search(user_lat, user_lng, user_id, reply_token)
         return
 
     # 否則：預設進入存檔模式
@@ -280,8 +347,4 @@ def handle_save_task(raw_message, user_id, reply_token):
         reply_line(reply_token, [{"type": "text", "text": "⚠️ 無法解析座標"}])
 
 if __name__ == "__main__":
-    if len(sys.argv) > 3:
-        # 修改呼叫入口為 main()
-        main(sys.argv[1], sys.argv[2], sys.argv[3])
-    else:
-        print("❌ 參數不足")
+    main()
