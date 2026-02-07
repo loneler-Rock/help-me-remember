@@ -5,13 +5,14 @@ import requests
 import re
 import sys
 from supabase import create_client, Client
+from urllib.parse import urlparse, parse_qs
 
 # --- 1. 初始化設定 ---
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 LINE_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
 
-# 定義漂亮的顏色與圖示 (加入景點的支援)
+# 定義漂亮的顏色與圖示
 CATEGORY_COLORS = {
     "美食": "#E67E22", "景點": "#27AE60", "住宿": "#2980B9", 
     "其它": "#7F8C8D", "熱點": "#E74C3C", "廣告": "#D4AF37"
@@ -51,6 +52,32 @@ def get_user_state(user_id):
     except: pass
     return {"last_mode": "personal", "last_category": "美食"}
 
+def save_map_link(user_id, url):
+    """
+    簡單的儲存連結功能。
+    因為在 GitHub Actions 跑完整爬蟲比較慢，這裡先做「快速儲存」。
+    """
+    try:
+        # 1. 嘗試抓取網址中的一點點資訊 (如果有 CID 或座標)
+        # 這是一個簡易版，主要目的是先把連結存進去不遺失
+        location_name = "新地標 (待整理)"
+        
+        # 2. 存入 Supabase
+        # 注意：這裡假設您的 map_spots 表格允許 name 為空或是您可以接受預設值
+        data = {
+            "user_id": user_id,
+            "google_map_url": url,
+            "name": location_name,
+            "category": "其它", # 預設先分類為其它，使用者以後可以改
+            "created_at": "now()"
+        }
+        supabase.table("map_spots").insert(data).execute()
+        return True
+    except Exception as e:
+        print(f"❌ 儲存失敗: {e}")
+        return False
+
+# --- 4. 搜尋功能 (美食/景點) ---
 def get_hotspots_rpc(lat, lng, target_category=None):
     try:
         params = {"user_lat": lat, "user_lng": lng}
@@ -65,8 +92,7 @@ def get_nearby_spots(user_id, lat, lng, limit=10, target_category="美食"):
         spots = response.data
         results = []
         for spot in spots:
-            # 如果是「其它」類別，就不過濾，全部顯示，或者根據您的需求調整
-            # 這裡我們嚴格比對：如果是找美食，就只給美食；找景點就給景點
+            # 嚴格分類過濾
             db_cat = spot.get('category', '其它')
             if target_category and db_cat != target_category and target_category != "其它": 
                 continue
@@ -82,7 +108,7 @@ def get_nearby_spots(user_id, lat, lng, limit=10, target_category="美食"):
         return results[:limit]
     except: return []
 
-# --- 4. 產生漂亮卡片 ---
+# --- 5. 產生卡片 ---
 def create_radar_flex(spots, center_lat, center_lng, mode="personal", category="美食"):
     title_text = f"🐾 順順的{category}筆記" if mode == "personal" else f"🔥 熱門{category}"
     
@@ -101,13 +127,12 @@ def create_radar_flex(spots, center_lat, center_lng, mode="personal", category="
                 cat = "熱點"; note = f"🔥 {spot.get('popularity',0)} 人氣"
             map_url = spot.get('google_url') or "http://maps.google.com"
         else:
-            name = spot['location_name']
+            name = spot['location_name'] or spot.get('name', '未命名')
             cat = spot.get('category', '其它')
             dist = spot.get('dist_meters', 0)
             note = f"🐾 距離 {dist} m"
             map_url = spot.get('google_map_url') or spot.get('address')
 
-        # 決定顏色
         color = CATEGORY_COLORS.get(cat, "#7F8C8D")
         icon = CATEGORY_ICONS.get(cat, CATEGORY_ICONS["其它"])
         bg_color = color if not is_ad else "#F1C40F" 
@@ -142,10 +167,7 @@ def create_radar_flex(spots, center_lat, center_lng, mode="personal", category="
         bubbles.append(bubble)
         if len(bubbles) >= 10: break
 
-    # 最後加一張「切換模式」的卡片 (會根據目前的分類自動調整)
     switch_cmd_text = f"熱點 {category} {center_lat},{center_lng}" if mode == "personal" else f"{category} {center_lat},{center_lng}"
-    # 如果是個人模式，按鈕變成「看熱點」；如果是熱點模式，按鈕變成「看私藏」
-    # 這裡稍微簡化邏輯，讓它互切
     
     switch_bubble = {
         "type": "bubble", "size": "micro",
@@ -160,7 +182,7 @@ def create_radar_flex(spots, center_lat, center_lng, mode="personal", category="
     bubbles.append(switch_bubble)
     return {"type": "flex", "altText": title_text, "contents": {"type": "carousel", "contents": bubbles}}
 
-# --- 5. 主程式邏輯 (新增景點判斷) ---
+# --- 6. 主程式入口 ---
 def main():
     try:
         msg = sys.argv[1] # 訊息內容
@@ -179,9 +201,19 @@ def main():
                 "items": [{"type": "action", "action": {"type": "location", "label": "📍 傳送位置"}}]
             }
         }
+    
+    # ★★★ 1. 最優先：如果是網址，直接存起來！(修復了這裡) ★★★
+    if "http" in msg:
+        print("偵測到網址，執行儲存邏輯...")
+        # 呼叫儲存函式
+        success = save_map_link(user_id, msg)
+        if success:
+            reply_line(reply_token, [{"type": "text", "text": "😺 順順幫你記下來了！\n(我先幫你收著，晚點記得整理喔～)"}])
+        else:
+            reply_line(reply_token, [{"type": "text", "text": "😿 哎呀，儲存失敗了... 再試一次看看？"}])
+        return # 存完就結束，不要往下跑搜尋
 
-    # ★ 智慧判斷類別 (Smart Category Detection)
-    # 預設是美食，但如果有關鍵字就切換
+    # ★ 2. 智慧判斷類別 (美食/景點/住宿)
     target_cat = "美食" 
     if "景點" in msg or "玩" in msg:
         target_cat = "景點"
@@ -195,10 +227,8 @@ def main():
             lat_str, lng_str = clean_msg.split(',')
             lat = float(lat_str); lng = float(lng_str)
 
-            # 判斷是「熱點」還是「私藏」
             mode = "hotspot" if "熱點" in msg else "personal"
             
-            # 執行搜尋
             if mode == "hotspot": spots = get_hotspots_rpc(lat, lng, target_cat)
             else: spots = get_nearby_spots(user_id, lat, lng, 10, target_cat)
             
@@ -212,10 +242,9 @@ def main():
             clean_msg = msg.replace(" ", "")
             lat, lng = map(float, clean_msg.split(','))
             
-            # 讀取記憶：上次他是想找什麼？
             state = get_user_state(user_id)
             mode = state.get("last_mode", "personal")
-            category = state.get("last_category", "美食") # 讀取記憶中的類別
+            category = state.get("last_category", "美食") 
 
             if mode == "hotspot": spots = get_hotspots_rpc(lat, lng, category)
             else: spots = get_nearby_spots(user_id, lat, lng, 10, category)
@@ -226,14 +255,12 @@ def main():
 
     # --- 邏輯 C：文字指令 (切換模式與類別) ---
     if "說明" in msg or "教學" in msg:
-        reply_line(reply_token, [{"type": "text", "text": "😺 我是順順！\n\n你可以說：\n🔸「順順帶路」👉 找私藏美食\n🔸「貓友熱點」👉 找熱門美食\n🔸「找景點」👉 找私藏景點\n🔸「景點熱點」👉 找熱門景點\n\n記得分享 Google Maps 連結給我存檔喔！"}])
+        reply_line(reply_token, [{"type": "text", "text": "😺 我是順順！\n\n你可以說：\n🔸「順順帶路」👉 找私藏美食\n🔸「貓友熱點」👉 找熱門美食\n🔸「找景點」👉 找私藏景點\n🔸「景點熱點」👉 找熱門景點\n\n當然，直接分享 Google Maps 連結給我，我會立刻幫你存！"}])
     
-    # 針對「熱點」
     elif "熱點" in msg:
         update_user_state(user_id, "hotspot", target_cat)
         reply_line(reply_token, [ask_location(f"🔥 搜尋{target_cat}模式\n請傳送位置給我！")])
 
-    # 針對「帶路」或單純說「景點」
     elif "帶路" in msg or "景點" in msg or "美食" in msg:
         update_user_state(user_id, "personal", target_cat)
         reply_line(reply_token, [ask_location(f"🐾 搜尋私藏{target_cat}模式\n請傳送位置給我！")])
