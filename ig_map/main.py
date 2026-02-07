@@ -52,14 +52,11 @@ def get_user_state(user_id):
     except: pass
     return {"last_mode": "personal", "last_category": "美食"}
 
-# ★★★ 新增：關鍵字猜分類 ★★★
+# --- 關鍵字猜分類 ---
 def guess_category_by_name(name):
     name = name.lower()
-    # 景點關鍵字
     spot_keywords = ["森林", "公園", "步道", "館", "寺", "廟", "宮", "堂", "中心", "農場", "樂園", "廣場", "車站", "碼頭", "瀑布", "景點", "風景", "山", "湖", "潭", "洞"]
-    # 美食關鍵字
     food_keywords = ["咖啡", "cafe", "coffee", "廚房", "餐廳", "料理", "麵", "飯", "食", "味", "飲", "茶", "湯", "肉", "鍋", "餅", "攤", "店", "bar", "bistro", "bakery", "甜點"]
-    # 住宿關鍵字
     hotel_keywords = ["飯店", "酒店", "民宿", "旅店", "旅館", "hotel", "hostel", "bnb"]
 
     for k in hotel_keywords:
@@ -68,26 +65,36 @@ def guess_category_by_name(name):
         if k in name: return "景點"
     for k in food_keywords:
         if k in name: return "美食"
-    
-    return "其它" # 真的猜不到才放其它
+    return "其它"
 
-# ★★★ 強化版：標題抓取 + 清理地址 ★★★
-def get_url_title(url):
+# ★★★ 強化版：抓標題 + 抓座標 ★★★
+def analyze_url(url):
     try:
         headers = {
             "User-Agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
             "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7"
         }
         
+        # 取得網頁 (會自動展開短網址)
         response = requests.get(url, headers=headers, timeout=8, allow_redirects=True)
         final_url = response.url 
+        print(f"長網址: {final_url}")
+
+        # --- 1. 偷抓座標 (解析網址中的 @lat,lng) ---
+        lat, lng = 0.0, 0.0
+        # 正規表達式尋找 @數字,數字
+        coords_match = re.search(r'@(-?\d+\.\d+),(-?\d+\.\d+)', final_url)
+        if coords_match:
+            lat = float(coords_match.group(1))
+            lng = float(coords_match.group(2))
+            print(f"抓到座標: {lat}, {lng}")
         
+        # --- 2. 抓標題 ---
         title_candidate = "新地標 (待整理)"
-        
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # 策略 A: 優先抓取 og:title
+            # 策略 A: og:title
             og_title = soup.find("meta", property="og:title")
             raw_title = ""
             if og_title and og_title.get("content"):
@@ -95,58 +102,52 @@ def get_url_title(url):
             elif soup.title and soup.title.string:
                 raw_title = soup.title.string
             
-            # ★ 關鍵修正：清理地址 (以 "·" 或 "-" 分割)
+            # 清理標題
             if raw_title:
-                # Google Maps 格式通常是 "店名 · 地址" 或 "店名 - Google 地圖"
-                clean_title = raw_title.split('·')[0] # 砍掉地址
-                clean_title = clean_title.split('- Google')[0] # 砍掉 Google 字樣
+                clean_title = raw_title.split('·')[0] 
+                clean_title = clean_title.split('- Google')[0]
                 clean_title = clean_title.strip()
-                
                 if clean_title and "Google Maps" not in clean_title:
-                    return clean_title
+                    title_candidate = clean_title
             
-            # 策略 C: 從網址 URL 分析
-            if "/place/" in final_url:
+            # 策略 C: 從網址分析 (如果標題失敗)
+            if title_candidate == "新地標 (待整理)" and "/place/" in final_url:
                 try:
                     parts = final_url.split("/place/")[1]
                     name_part = parts.split("/")[0] 
                     decoded_name = unquote(name_part).replace("+", " ")
-                    return decoded_name
+                    title_candidate = decoded_name
                 except: pass
 
-        return title_candidate
+        return title_candidate, lat, lng
 
     except Exception as e:
-        print(f"⚠️ 抓標題失敗: {e}")
-    
-    return "新地標 (待整理)"
+        print(f"⚠️ 分析失敗: {e}")
+        return "新地標 (待整理)", 0.0, 0.0
 
 def save_map_link(user_id, url):
     try:
         print(f"正在分析網址: {url}")
-        fetched_name = get_url_title(url)
-        print(f"抓到的店名: {fetched_name}")
+        # 呼叫新的分析函式，一次拿回三個東西
+        fetched_name, lat, lng = analyze_url(url)
+        print(f"抓到的店名: {fetched_name}, 座標: {lat},{lng}")
 
-        # 如果還是只抓到 Google Maps
         if fetched_name in ["Google Maps", "Google 地圖"]:
             fetched_name = "新地標 (Google Maps)"
 
-        # ★ 這裡執行自動分類
         guessed_category = guess_category_by_name(fetched_name)
 
         data = {
             "user_id": user_id,
             "google_map_url": url,
             "location_name": fetched_name,
-            "category": guessed_category, # 使用猜測的分類
-            "latitude": 0.0,
-            "longitude": 0.0,
+            "category": guessed_category,
+            "latitude": lat,  # ★ 存入抓到的座標
+            "longitude": lng, # ★ 存入抓到的座標
             "created_at": "now()"
         }
         
-        # 執行寫入
         supabase.table("map_spots").insert(data).execute()
-        # 回傳名字和分類，讓 LINE 回覆時可以用
         return fetched_name, guessed_category
     except Exception as e:
         print(f"❌ 儲存失敗: {e}")
@@ -172,7 +173,8 @@ def get_nearby_spots(user_id, lat, lng, limit=10, target_category="美食"):
                 continue
             s_lat = spot.get('latitude')
             s_lng = spot.get('longitude')
-            if s_lat and s_lng:
+            # 這裡加個判斷，如果座標是 0.0 就不要算距離了，或者視為無限遠
+            if s_lat and s_lng and (s_lat != 0.0 or s_lng != 0.0):
                 dist = math.sqrt((s_lat - lat)**2 + (s_lng - lng)**2)
                 spot['dist_score'] = dist
                 spot['dist_meters'] = int(dist * 111 * 1000)
